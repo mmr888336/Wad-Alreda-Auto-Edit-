@@ -26,6 +26,14 @@ class AiStep<T> {
   AiStep(this.label, this.run);
 }
 
+/// مفتاح + موديل Gemini (نجرب عدة مفاتيح من مشاريع مختلفة عشان الحصة)
+class GeminiTarget {
+  final String key;
+  final String model;
+  final String label;
+  GeminiTarget(this.key, this.model, this.label);
+}
+
 class AiResult<T> {
   final T value;
   final String label;
@@ -100,18 +108,36 @@ class AiRouter {
   static final Map<String, List<String>> _modelCache = {};
 
   /// موديل المستخدم أولاً، ثم أحدث موديلات flash المتاحة لمفتاحه (نكتشفها من جوجل).
-  static Future<List<String>> geminiCandidates(AppSettings s) async {
-    final key = s.geminiKey.trim();
-    if (key.isEmpty) return [];
+  static Future<List<String>> _modelsFor(String key, String saved) async {
     final out = <String>[];
-    final saved = s.geminiModel.trim();
     if (saved.isNotEmpty) out.add(saved);
     final found = _modelCache[key] ?? await _discover(key);
     _modelCache[key] = found;
     for (final m in found) {
       if (!out.contains(m)) out.add(m);
     }
-    return out.take(4).toList();
+    return out.take(3).toList();
+  }
+
+  /// قائمة (مفتاح + موديل) بالترتيب: أفضل موديل لكل مفتاح أولاً، ثم الموديل التالي، وهكذا.
+  static Future<List<GeminiTarget>> geminiTargets(AppSettings s) async {
+    final keys = s.geminiKeys;
+    if (keys.isEmpty) return [];
+    final perKey = <List<String>>[];
+    for (final k in keys) {
+      perKey.add(await _modelsFor(k, s.geminiModel.trim()));
+    }
+    final out = <GeminiTarget>[];
+    for (var j = 0; j < 3; j++) {
+      for (var i = 0; i < keys.length; i++) {
+        if (j < perKey[i].length) {
+          final m = perKey[i][j];
+          final tag = keys.length > 1 ? ' #${i + 1}' : '';
+          out.add(GeminiTarget(keys[i], m, 'Gemini$tag $m'));
+        }
+      }
+    }
+    return out;
   }
 
   static Future<List<String>> _discover(String key) async {
@@ -149,15 +175,15 @@ class AiRouter {
   }
 
   /// استدعاء Gemini. parts = أجزاء الرسالة (نص / صوت / صورة).
-  static Future<String> gemini(AppSettings s, String model,
-      List<Map<String, dynamic>> parts,
+  static Future<String> gemini(GeminiTarget t, List<Map<String, dynamic>> parts,
       {bool json = true, int timeoutSec = 120}) async {
+    final model = t.model;
     final r = await http
         .post(
           Uri.parse('$_geminiBase/models/$model:generateContent'),
           headers: {
             'Content-Type': 'application/json',
-            'x-goog-api-key': s.geminiKey.trim(),
+            'x-goog-api-key': t.key,
           },
           body: jsonEncode({
             'contents': [
@@ -238,13 +264,16 @@ class AiRouter {
 
   /// تحويل صوت لنص بـ Whisper على Groq. يرجع مقاطع: start / end / text
   static Future<List<Map<String, dynamic>>> groqTranscribe(
-      AppSettings s, String model, Uint8List bytes) async {
+      AppSettings s, String model, Uint8List bytes,
+      {String? language}) async {
     final req = http.MultipartRequest(
         'POST', Uri.parse('https://api.groq.com/openai/v1/audio/transcriptions'))
       ..headers['Authorization'] = 'Bearer ${s.groqKey.trim()}'
       ..fields['model'] = model
       ..fields['response_format'] = 'verbose_json'
       ..fields['temperature'] = '0'
+      ..fields.addAll(
+          (language != null && language.isNotEmpty) ? {'language': language} : {})
       ..files.add(
           http.MultipartFile.fromBytes('file', bytes, filename: 'chunk.wav'));
     final streamed = await req.send().timeout(const Duration(seconds: 120));
@@ -265,18 +294,23 @@ class AiRouter {
   static Future<List<String>> testAll(AppSettings s) async {
     final lines = <String>[];
     const ping = 'Reply with the single word: ok';
-    if (s.geminiKey.trim().isNotEmpty) {
-      final models = await geminiCandidates(s);
-      if (models.isEmpty) {
-        lines.add('Gemini ❌ ما لقيت موديل');
-      } else {
+    final keys = s.geminiKeys;
+    if (keys.isNotEmpty) {
+      final targets = await geminiTargets(s);
+      for (var i = 0; i < keys.length; i++) {
+        final tag = keys.length > 1 ? ' #${i + 1}' : '';
+        final mine = targets.where((t) => t.key == keys[i]).toList();
+        if (mine.isEmpty) {
+          lines.add('Gemini$tag ❌ ما لقيت موديل');
+          continue;
+        }
         try {
-          await gemini(s, models.first, [
+          await gemini(mine.first, [
             {'text': ping}
           ], json: false, timeoutSec: 30);
-          lines.add('Gemini ✅ ${models.first} (احتياط: ${models.length - 1})');
+          lines.add('Gemini$tag ✅ ${mine.first.model} (احتياط: ${mine.length - 1})');
         } catch (e) {
-          lines.add('Gemini ❌ ${cut('$e')}');
+          lines.add('Gemini$tag ❌ ${cut('$e')}');
         }
       }
     } else {
