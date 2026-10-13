@@ -3,12 +3,16 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'ai_router.dart';
+import 'languages.dart';
 
 /// إعدادات التطبيق محفوظة محليًا على الجوال.
 class AppSettings {
   String provider;
   String geminiKey;
   String geminiModel;
+  String geminiKey2;
+  String geminiKey3;
+  String country;
   String mistralKey;
   String mistralModel;
   String groqKey;
@@ -34,6 +38,9 @@ class AppSettings {
     this.provider = 'gemini',
     this.geminiKey = '',
     this.geminiModel = 'gemini-3.8-flash',
+    this.geminiKey2 = '',
+    this.geminiKey3 = '',
+    this.country = 'SD',
     this.mistralKey = '',
     this.mistralModel = 'mistral-small-latest',
     this.groqKey = '',
@@ -58,8 +65,16 @@ class AppSettings {
 
   String get activeKey => provider == 'gemini' ? geminiKey : mistralKey;
 
+  /// مفاتيح Gemini غير الفارغة (من مشاريع مختلفة لزيادة الحصة)
+  List<String> get geminiKeys => [geminiKey, geminiKey2, geminiKey3]
+      .map((k) => k.trim())
+      .where((k) => k.isNotEmpty)
+      .toList();
+
+  String get lang => Languages.byCode(country).lang;
+
   bool get hasAnyAiKey =>
-      geminiKey.trim().isNotEmpty ||
+      geminiKeys.isNotEmpty ||
       groqKey.trim().isNotEmpty ||
       mistralKey.trim().isNotEmpty;
 
@@ -69,6 +84,9 @@ class AppSettings {
       provider: prefs.getString('provider') ?? 'gemini',
       geminiKey: prefs.getString('geminiKey') ?? '',
       geminiModel: prefs.getString('geminiModel') ?? 'gemini-3.8-flash',
+      geminiKey2: prefs.getString('geminiKey2') ?? '',
+      geminiKey3: prefs.getString('geminiKey3') ?? '',
+      country: prefs.getString('country') ?? 'SD',
       mistralKey: prefs.getString('mistralKey') ?? '',
       mistralModel: prefs.getString('mistralModel') ?? 'mistral-small-latest',
       groqKey: prefs.getString('groqKey') ?? '',
@@ -97,6 +115,9 @@ class AppSettings {
     await prefs.setString('provider', provider);
     await prefs.setString('geminiKey', geminiKey.trim());
     await prefs.setString('geminiModel', geminiModel.trim());
+    await prefs.setString('geminiKey2', geminiKey2.trim());
+    await prefs.setString('geminiKey3', geminiKey3.trim());
+    await prefs.setString('country', country);
     await prefs.setString('mistralKey', mistralKey.trim());
     await prefs.setString('mistralModel', mistralModel.trim());
     await prefs.setString('groqKey', groqKey.trim());
@@ -166,6 +187,8 @@ class _SettingsPageState extends State<SettingsPage> {
   AppSettings? settings;
   final geminiKey = TextEditingController();
   final geminiModel = TextEditingController();
+  final geminiKey2 = TextEditingController();
+  final geminiKey3 = TextEditingController();
   final mistralKey = TextEditingController();
   final mistralModel = TextEditingController();
   final groqKey = TextEditingController();
@@ -183,6 +206,8 @@ class _SettingsPageState extends State<SettingsPage> {
         settings = value;
         geminiKey.text = value.geminiKey;
         geminiModel.text = value.geminiModel;
+        geminiKey2.text = value.geminiKey2;
+        geminiKey3.text = value.geminiKey3;
         mistralKey.text = value.mistralKey;
         mistralModel.text = value.mistralModel;
         groqKey.text = value.groqKey;
@@ -196,6 +221,8 @@ class _SettingsPageState extends State<SettingsPage> {
   void dispose() {
     geminiKey.dispose();
     geminiModel.dispose();
+    geminiKey2.dispose();
+    geminiKey3.dispose();
     mistralKey.dispose();
     mistralModel.dispose();
     groqKey.dispose();
@@ -208,6 +235,8 @@ class _SettingsPageState extends State<SettingsPage> {
     final current = settings!;
     current.geminiKey = geminiKey.text;
     current.geminiModel = geminiModel.text;
+    current.geminiKey2 = geminiKey2.text;
+    current.geminiKey3 = geminiKey3.text;
     current.mistralKey = mistralKey.text;
     current.mistralModel = mistralModel.text;
     current.groqKey = groqKey.text;
@@ -253,12 +282,33 @@ class _SettingsPageState extends State<SettingsPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          const Text('الدولة واللغة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+          const SizedBox(height: 6),
+          DropdownButtonFormField<String>(
+            value: current.country,
+            isExpanded: true,
+            decoration: const InputDecoration(border: OutlineInputBorder(), labelText: 'الدولة'),
+            items: [
+              for (final c in Languages.countries) DropdownMenuItem(value: c.code, child: Text(c.name)),
+            ],
+            onChanged: (value) => setState(() => current.country = value ?? current.country),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 6, bottom: 4),
+            child: Text(
+              'لغة الكابشن: ${Languages.byCode(current.country).langName} ${Languages.byCode(current.country).dialect}'.trim(),
+              style: const TextStyle(fontSize: 12, color: Colors.white70),
+            ),
+          ),
+          const Divider(height: 32),
           const Text('الذكاء الاصطناعي', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
           const SizedBox(height: 6),
-          const Text('النظام يجرّب Gemini أولاً، وإذا فشل ينتقل تلقائيًا إلى Groq ثم Mistral حسب المفاتيح الموجودة. يكفي مفتاح واحد، وكل ما زادت المفاتيح زادت الموثوقية.', style: TextStyle(fontSize: 12, color: Colors.white70)),
+          const Text('النظام يجرّب مفاتيح Gemini أولاً، وإذا فشلت (مثل خلوص الحصة) ينتقل تلقائيًا إلى Groq ثم Mistral حسب المفاتيح الموجودة. حصة Gemini المجانية لكل مشروع وليس لكل مفتاح، فالمفتاح الاحتياطي لازم يكون من مشروع مختلف في AI Studio.', style: TextStyle(fontSize: 12, color: Colors.white70)),
           const SizedBox(height: 10),
           _field(geminiKey, 'مفتاح Gemini', secret: true),
           _field(geminiModel, 'اسم نموذج Gemini'),
+          _field(geminiKey2, 'مفتاح Gemini احتياطي 2 (من مشروع مختلف)', secret: true),
+          _field(geminiKey3, 'مفتاح Gemini احتياطي 3 (من مشروع مختلف)', secret: true),
           _field(groqKey, 'مفتاح Groq', secret: true),
           _field(mistralKey, 'مفتاح Mistral', secret: true),
           _field(mistralModel, 'اسم نموذج Mistral'),
