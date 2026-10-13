@@ -111,8 +111,8 @@ class Enhancer {
 
     // 1) تحليل الصوت بالذكاء الاصطناعي (Gemini يسمع الصوت)
     Analysis? an;
-    if (s.geminiKey.trim().isEmpty) {
-      notes.add('ما في مفتاح Gemini؛ لم تتم إضافة الكابشن أو العنوان أو B-roll.');
+    if (!s.hasAnyAiKey) {
+      notes.add('ما في مفتاح ذكاء اصطناعي؛ لم تتم إضافة الكابشن أو العنوان أو B-roll.');
     } else if (cutSec > 300) {
       notes.add('الفيديو أطول من 5 دقائق؛ تم تخطي التحليل بالذكاء الاصطناعي.');
     } else {
@@ -124,7 +124,10 @@ class Enhancer {
         final ok = await _run(
             '-y -i "$cutPath" -vn -ac 1 -ar 16000 -c:a pcm_s16le "$wav"');
         if (!ok) throw Exception('تعذر استخراج الصوت من الفيديو.');
-        an = await Analyzer.run(s, wav, cutSec);
+        final res = await Analyzer.run(s, wav, cutSec,
+            cutTimes: cutTimes, onStatus: onStatus);
+        an = res;
+        notes.addAll(res.notes);
       } catch (e) {
         if (JobControl.cancelled) rethrow;
         notes.add('تعذر التحليل: $e');
