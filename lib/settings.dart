@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'ai_router.dart';
 
 /// إعدادات التطبيق محفوظة محليًا على الجوال.
 class AppSettings {
@@ -10,6 +11,7 @@ class AppSettings {
   String geminiModel;
   String mistralKey;
   String mistralModel;
+  String groqKey;
   double noiseDb;
   double minSilence;
   bool captions;
@@ -31,9 +33,10 @@ class AppSettings {
   AppSettings({
     this.provider = 'gemini',
     this.geminiKey = '',
-    this.geminiModel = 'gemini-2.5-flash',
+    this.geminiModel = 'gemini-3.8-flash',
     this.mistralKey = '',
     this.mistralModel = 'mistral-small-latest',
+    this.groqKey = '',
     this.noiseDb = -30,
     this.minSilence = 0.5,
     this.captions = true,
@@ -55,14 +58,20 @@ class AppSettings {
 
   String get activeKey => provider == 'gemini' ? geminiKey : mistralKey;
 
+  bool get hasAnyAiKey =>
+      geminiKey.trim().isNotEmpty ||
+      groqKey.trim().isNotEmpty ||
+      mistralKey.trim().isNotEmpty;
+
   static Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
     return AppSettings(
       provider: prefs.getString('provider') ?? 'gemini',
       geminiKey: prefs.getString('geminiKey') ?? '',
-      geminiModel: prefs.getString('geminiModel') ?? 'gemini-2.5-flash',
+      geminiModel: prefs.getString('geminiModel') ?? 'gemini-3.8-flash',
       mistralKey: prefs.getString('mistralKey') ?? '',
       mistralModel: prefs.getString('mistralModel') ?? 'mistral-small-latest',
+      groqKey: prefs.getString('groqKey') ?? '',
       noiseDb: prefs.getDouble('noiseDb') ?? -30,
       minSilence: prefs.getDouble('minSilence') ?? 0.5,
       captions: prefs.getBool('captions') ?? true,
@@ -90,6 +99,7 @@ class AppSettings {
     await prefs.setString('geminiModel', geminiModel.trim());
     await prefs.setString('mistralKey', mistralKey.trim());
     await prefs.setString('mistralModel', mistralModel.trim());
+    await prefs.setString('groqKey', groqKey.trim());
     await prefs.setDouble('noiseDb', noiseDb);
     await prefs.setDouble('minSilence', minSilence);
     await prefs.setBool('captions', captions);
@@ -158,6 +168,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final geminiModel = TextEditingController();
   final mistralKey = TextEditingController();
   final mistralModel = TextEditingController();
+  final groqKey = TextEditingController();
   final pexelsKey = TextEditingController();
   final pixabayKey = TextEditingController();
   String testResult = '';
@@ -174,6 +185,7 @@ class _SettingsPageState extends State<SettingsPage> {
         geminiModel.text = value.geminiModel;
         mistralKey.text = value.mistralKey;
         mistralModel.text = value.mistralModel;
+        groqKey.text = value.groqKey;
         pexelsKey.text = value.pexelsKey;
         pixabayKey.text = value.pixabayKey;
       });
@@ -186,6 +198,7 @@ class _SettingsPageState extends State<SettingsPage> {
     geminiModel.dispose();
     mistralKey.dispose();
     mistralModel.dispose();
+    groqKey.dispose();
     pexelsKey.dispose();
     pixabayKey.dispose();
     super.dispose();
@@ -197,6 +210,7 @@ class _SettingsPageState extends State<SettingsPage> {
     current.geminiModel = geminiModel.text;
     current.mistralKey = mistralKey.text;
     current.mistralModel = mistralModel.text;
+    current.groqKey = groqKey.text;
     current.pexelsKey = pexelsKey.text;
     current.pixabayKey = pixabayKey.text;
   }
@@ -208,8 +222,9 @@ class _SettingsPageState extends State<SettingsPage> {
       testResult = '';
     });
     try {
-      final text = await AiService.generate(settings!, 'اكتب كلمة واحدة فقط: مرحبا');
-      if (mounted) setState(() => testResult = 'شغال ✅ الرد: ${text.trim()}');
+      await settings!.save(); // نحفظ أولاً عشان الاختبار والتصدير يستخدمون نفس القيم
+      final lines = await AiRouter.testAll(settings!);
+      if (mounted) setState(() => testResult = '${lines.join('\n')}\n(تم حفظ المفاتيح)');
     } catch (e) {
       if (mounted) setState(() => testResult = 'فشل ❌ $e');
     } finally {
@@ -240,14 +255,14 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           const Text('الذكاء الاصطناعي', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
           const SizedBox(height: 6),
-          const Text('الكابشن والعنوان واقتراحات B-roll وفحص الصور تستخدم Gemini دائمًا (لأنه يسمع الصوت ويرى الصور).', style: TextStyle(fontSize: 12, color: Colors.white70)),
-          RadioListTile<String>(title: const Text('Gemini'), value: 'gemini', groupValue: current.provider, onChanged: (value) => setState(() => current.provider = value!)),
-          RadioListTile<String>(title: const Text('Mistral'), value: 'mistral', groupValue: current.provider, onChanged: (value) => setState(() => current.provider = value!)),
+          const Text('النظام يجرّب Gemini أولاً، وإذا فشل ينتقل تلقائيًا إلى Groq ثم Mistral حسب المفاتيح الموجودة. يكفي مفتاح واحد، وكل ما زادت المفاتيح زادت الموثوقية.', style: TextStyle(fontSize: 12, color: Colors.white70)),
+          const SizedBox(height: 10),
           _field(geminiKey, 'مفتاح Gemini', secret: true),
           _field(geminiModel, 'اسم نموذج Gemini'),
+          _field(groqKey, 'مفتاح Groq', secret: true),
           _field(mistralKey, 'مفتاح Mistral', secret: true),
           _field(mistralModel, 'اسم نموذج Mistral'),
-          FilledButton.tonal(onPressed: testing ? null : _test, child: Text(testing ? 'جاري الاختبار...' : 'اختبر المفتاح')),
+          FilledButton.tonal(onPressed: testing ? null : _test, child: Text(testing ? 'جاري الاختبار...' : 'احفظ واختبر المفاتيح')),
           if (testResult.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8), child: SelectableText(testResult)),
           const Divider(height: 32),
           const Text('ميزات المونتاج', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
