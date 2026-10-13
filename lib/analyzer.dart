@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 import 'ai_router.dart';
+import 'languages.dart';
 import 'settings.dart';
 import 'silence_cutter.dart';
 
@@ -122,29 +123,29 @@ class Analyzer {
     return out;
   }
 
-  static String _audioPrompt(double dur) => '''
-أنت محرر فيديوهات قصيرة (ريلز / تيك توك). استمع للصوت المرفق (غالباً كلام عربي بلهجة سودانية أو عامية). مدة الصوت ${dur.toStringAsFixed(1)} ثانية.
+  static String _audioPrompt(AppSettings s, double dur) => '''
+أنت محرر فيديوهات قصيرة (ريلز / تيك توك). استمع للصوت المرفق. ${Languages.audioHint(s.country)} مدة الصوت ${dur.toStringAsFixed(1)} ثانية.
 أرجع JSON فقط، بدون أي شرح وبدون علامات markdown، بهذا الشكل بالضبط:
 {"segments":[{"start":0.0,"end":1.6,"text":"..."}]}
 القواعد:
-- segments: قسّم الكلام لمقاطع قصيرة (من 2 إلى 5 كلمات). وقت البداية والنهاية بالثواني العشرية (مثل 12.4) وليس بصيغة دقائق:ثواني، والبداية من 0 في أول هذا المقطع الصوتي. اكتب الكلام بنفس لهجة المتحدث كما نطقه بدون تحويله للفصحى وبدون علامات ترقيم. لا تكتب شيئاً في فترات الصمت أو الموسيقى.
+- segments: قسّم الكلام لمقاطع قصيرة (من 2 إلى 5 كلمات). وقت البداية والنهاية بالثواني العشرية (مثل 12.4) وليس بصيغة دقائق:ثواني، والبداية من 0 في أول هذا المقطع الصوتي. اكتب الكلام بنفس لغة المتحدث ولهجته كما نطقه، بدون تحويله للفصحى أو لغة ثانية، وبدون علامات ترقيم. لا تكتب شيئاً في فترات الصمت أو الموسيقى.
 ''';
 
   /// تفريغ مقطع صوتي واحد (توقيت نسبي لبداية المقطع).
   static Future<AiResult<List<Caption>>> _transcribeChunk(AppSettings s,
-      Uint8List bytes, List<String> geminiModels, double dur) async {
+      Uint8List bytes, List<GeminiTarget> targets, double dur) async {
     final steps = <AiStep<List<Caption>>>[];
 
-    for (final model in geminiModels) {
-      steps.add(AiStep('Gemini $model', () async {
-        final text = await AiRouter.gemini(s, model, [
+    for (final t in targets) {
+      steps.add(AiStep(t.label, () async {
+        final text = await AiRouter.gemini(t, [
           {
             'inline_data': {
               'mime_type': 'audio/wav',
               'data': base64Encode(bytes),
             }
           },
-          {'text': _audioPrompt(dur)},
+          {'text': _audioPrompt(s, dur)},
         ]);
         final m = _json(text);
         final caps = <Caption>[];
@@ -164,7 +165,8 @@ class Analyzer {
     if (s.groqKey.trim().isNotEmpty) {
       for (final model in [AiRouter.groqWhisperTurbo, AiRouter.groqWhisperV3]) {
         steps.add(AiStep('Groq $model', () async {
-          final segs = await AiRouter.groqTranscribe(s, model, bytes);
+          final segs = await AiRouter.groqTranscribe(s, model, bytes,
+              language: s.lang);
           final caps = <Caption>[];
           for (final e in segs) {
             final st = _num(e['start']);
@@ -181,7 +183,7 @@ class Analyzer {
 
   /// العنوان والوصف والهاشتاقات وأفكار B-roll من النص الكامل (بدون صوت، فأي موديل نصي ينفع).
   static Future<AiResult<Map<String, dynamic>>> _metadata(
-      AppSettings s, List<String> geminiModels, String transcript, double dur) async {
+      AppSettings s, List<GeminiTarget> targets, String transcript, double dur) async {
     final prompt = '''
 أنت محرر فيديوهات قصيرة (ريلز / تيك توك). هذا نص كلام الفيديو مع وقت بداية كل عبارة بالثواني. مدة الفيديو ${dur.toStringAsFixed(1)} ثانية.
 أرجع JSON فقط، بدون أي شرح وبدون علامات markdown، بهذا الشكل بالضبط:
@@ -196,9 +198,9 @@ class Analyzer {
 $transcript
 ''';
     final steps = <AiStep<Map<String, dynamic>>>[];
-    for (final model in geminiModels) {
-      steps.add(AiStep('Gemini $model', () async {
-        final t = await AiRouter.gemini(s, model, [
+    for (final tg in targets) {
+      steps.add(AiStep(tg.label, () async {
+        final t = await AiRouter.gemini(tg, [
           {'text': prompt}
         ]);
         return _json(t);
@@ -235,7 +237,7 @@ $transcript
     }
     AiRouter.resetCooldowns();
     final notes = <String>[];
-    final geminiModels = await AiRouter.geminiCandidates(s);
+    final targets = await AiRouter.geminiTargets(s);
 
     // ---- 1) تفريغ الصوت مقطع بمقطع ----
     final chunks = _chunks(durationSec, cutTimes);
@@ -254,7 +256,7 @@ $transcript
           temps.add(chunkPath);
           await _cutWav(wavPath, st, len, chunkPath);
           final bytes = await File(chunkPath).readAsBytes();
-          final res = await _transcribeChunk(s, bytes, geminiModels, len);
+          final res = await _transcribeChunk(s, bytes, targets, len);
           used[res.label] = (used[res.label] ?? 0) + 1;
           if (res.failures.isNotEmpty) {
             notes.add('المقطع ${i + 1}: تم التبديل إلى ${res.label} (${res.failures.last})');
@@ -304,7 +306,7 @@ $transcript
           .map((c) => '[${c.start.toStringAsFixed(1)}] ${c.text}')
           .join('\n');
       if (transcript.length > 7000) transcript = transcript.substring(0, 7000);
-      final res = await _metadata(s, geminiModels, transcript, durationSec);
+      final res = await _metadata(s, targets, transcript, durationSec);
       final m = res.value;
       title = '${m['title'] ?? ''}'.trim();
       description = '${m['description'] ?? ''}'.trim();
@@ -333,11 +335,10 @@ $transcript
     const q =
         'Does this image show a woman, a girl, or any female person (face or body)? Answer with exactly one word: YES or NO.';
     final steps = <AiStep<bool>>[];
-    for (final model in await AiRouter.geminiCandidates(s)) {
-      steps.add(AiStep('Gemini $model', () async {
+    for (final tg in await AiRouter.geminiTargets(s)) {
+      steps.add(AiStep(tg.label, () async {
         final t = await AiRouter.gemini(
-            s,
-            model,
+            tg,
             [
               {
                 'inline_data': {'mime_type': 'image/jpeg', 'data': b64}
