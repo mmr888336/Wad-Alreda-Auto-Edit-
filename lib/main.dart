@@ -6,6 +6,7 @@ import 'package:gal/gal.dart';
 import 'package:share_plus/share_plus.dart';
 import 'ad_page.dart';
 import 'enhancer.dart';
+import 'language_page.dart';
 import 'settings.dart';
 import 'silence_cutter.dart';
 
@@ -93,8 +94,7 @@ class WelcomePage extends StatelessWidget {
                   width: double.infinity,
                   child: FilledButton.icon(
                     onPressed: () => Navigator.of(context).pushReplacement(
-                      MaterialPageRoute(builder: (_) => const HomePage()),
-                    ),
+                                            MaterialPageRoute(builder: (_) => const LanguageGate(next: HomePage())),
                     icon: const Icon(Icons.play_arrow_rounded),
                     label: const Padding(
                       padding: EdgeInsets.symmetric(vertical: 14),
