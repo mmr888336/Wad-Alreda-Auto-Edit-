@@ -94,7 +94,8 @@ class WelcomePage extends StatelessWidget {
                   width: double.infinity,
                   child: FilledButton.icon(
                     onPressed: () => Navigator.of(context).pushReplacement(
-                                            MaterialPageRoute(builder: (_) => const LanguageGate(next: HomePage())),
+                      MaterialPageRoute(builder: (_) => const LanguageGate(next: HomePage())),
+                    ),
                     icon: const Icon(Icons.play_arrow_rounded),
                     label: const Padding(
                       padding: EdgeInsets.symmetric(vertical: 14),
@@ -203,7 +204,6 @@ class _HomePageState extends State<HomePage> {
       status = 'بدأ المونتاج في الخلفية...\nسيظهر إعلان مكافأة، ولا يكتمل التصدير إلا بعد انتهائه.';
     });
 
-    // نبدأ القص والتصدير فوراً، وفي نفس الوقت نعرض الإعلان.
     final pipeline = _pipeline(source, settings);
     pipeline.ignore();
 
