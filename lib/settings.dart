@@ -1,11 +1,13 @@
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'ai_router.dart';
+import 'app_localizations.dart';
 import 'languages.dart';
 
-/// إعدادات التطبيق محفوظة محليًا على الجوال.
 class AppSettings {
   String provider;
   String geminiKey;
@@ -29,7 +31,7 @@ class AppSettings {
   bool sfx;
   bool enhanceAudio;
   bool visualEffects;
-  String visualStyle; // clean | cinematic | vivid
+  String visualStyle;
   bool punchZoom;
   bool flashTransitions;
   bool progressBar;
@@ -75,7 +77,6 @@ class AppSettings {
 
   String get activeKey => provider == 'gemini' ? geminiKey : mistralKey;
 
-  /// مفاتيح Gemini غير الفارغة (من مشاريع مختلفة لزيادة الحصة)
   List<String> get geminiKeys => [geminiKey, geminiKey2, geminiKey3]
       .map((k) => k.trim())
       .where((k) => k.isNotEmpty)
@@ -98,6 +99,7 @@ class AppSettings {
 
   static Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
+
     return AppSettings(
       provider: prefs.getString('provider') ?? 'gemini',
       geminiKey: prefs.getString('geminiKey') ?? '',
@@ -108,7 +110,8 @@ class AppSettings {
       mistralKey: prefs.getString('mistralKey') ?? '',
       mistralKey2: prefs.getString('mistralKey2') ?? '',
       mistralKey3: prefs.getString('mistralKey3') ?? '',
-      mistralModel: prefs.getString('mistralModel') ?? 'mistral-small-latest',
+      mistralModel:
+          prefs.getString('mistralModel') ?? 'mistral-small-latest',
       groqKey: prefs.getString('groqKey') ?? '',
       groqKey2: prefs.getString('groqKey2') ?? '',
       groqKey3: prefs.getString('groqKey3') ?? '',
@@ -135,6 +138,7 @@ class AppSettings {
 
   Future<void> save() async {
     final prefs = await SharedPreferences.getInstance();
+
     await prefs.setString('provider', provider);
     await prefs.setString('geminiKey', geminiKey.trim());
     await prefs.setString('geminiModel', geminiModel.trim());
@@ -168,85 +172,150 @@ class AppSettings {
     await prefs.setString('pixabayKey', pixabayKey.trim());
   }
 }
-
 class AiService {
-  static String _cut(String value) => value.length > 300 ? value.substring(0, 300) : value;
+  static String _cut(String value) =>
+      value.length > 300 ? value.substring(0, 300) : value;
 
-  static Future<String> generate(AppSettings settings, String prompt) async {
+  static Future<String> generate(
+    AppSettings settings,
+    String prompt,
+  ) async {
     if (settings.activeKey.trim().isEmpty) {
-      throw Exception('ما في مفتاح API. ضعه في الإعدادات.');
+      throw Exception('No API key has been configured.');
     }
+
     if (settings.provider == 'gemini') {
       final response = await http.post(
-        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/${settings.geminiModel}:generateContent'),
-        headers: {'Content-Type': 'application/json', 'x-goog-api-key': settings.geminiKey.trim()},
-        body: jsonEncode({'contents': [{'parts': [{'text': prompt}]}]}),
+        Uri.parse(
+          'https://generativelanguage.googleapis.com/v1beta/models/'
+          '${settings.geminiModel}:generateContent',
+        ),
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': settings.geminiKey.trim(),
+        },
+        body: jsonEncode({
+          'contents': [
+            {
+              'parts': [
+                {'text': prompt}
+              ]
+            }
+          ]
+        }),
       );
-      if (response.statusCode != 200) throw Exception('Gemini ${response.statusCode}: ${_cut(response.body)}');
-      final json = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+
+      if (response.statusCode != 200) {
+        throw Exception(
+          'Gemini ${response.statusCode}: ${_cut(response.body)}',
+        );
+      }
+
+      final json =
+          jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final candidates = json['candidates'] as List?;
-      if (candidates == null || candidates.isEmpty) throw Exception('Gemini لم يرجع نصًا.');
-      final content = candidates.first['content'] as Map<String, dynamic>?;
+
+      if (candidates == null || candidates.isEmpty) {
+        throw Exception('Gemini returned no text.');
+      }
+
+      final content =
+          candidates.first['content'] as Map<String, dynamic>?;
       final parts = content?['parts'] as List?;
-      if (parts == null || parts.isEmpty) throw Exception('استجابة Gemini لا تحتوي على نص.');
+
+      if (parts == null || parts.isEmpty) {
+        throw Exception('Gemini response contains no text.');
+      }
+
       return parts.first['text'] as String;
     }
 
     final response = await http.post(
       Uri.parse('https://api.mistral.ai/v1/chat/completions'),
-      headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${settings.mistralKey.trim()}'},
-      body: jsonEncode({'model': settings.mistralModel, 'messages': [{'role': 'user', 'content': prompt}]}),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ${settings.mistralKey.trim()}',
+      },
+      body: jsonEncode({
+        'model': settings.mistralModel,
+        'messages': [
+          {'role': 'user', 'content': prompt}
+        ],
+      }),
     );
-    if (response.statusCode != 200) throw Exception('Mistral ${response.statusCode}: ${_cut(response.body)}');
-    final json = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Mistral ${response.statusCode}: ${_cut(response.body)}',
+      );
+    }
+
+    final json =
+        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
     final choices = json['choices'] as List?;
-    if (choices == null || choices.isEmpty) throw Exception('Mistral لم يرجع نصًا.');
+
+    if (choices == null || choices.isEmpty) {
+      throw Exception('Mistral returned no text.');
+    }
+
     return choices.first['message']['content'] as String;
   }
 }
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
+
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
 class _SettingsPageState extends State<SettingsPage> {
   AppSettings? settings;
+
   final geminiKey = TextEditingController();
   final geminiModel = TextEditingController();
   final geminiKey2 = TextEditingController();
   final geminiKey3 = TextEditingController();
+
   final mistralKey = TextEditingController();
   final mistralKey2 = TextEditingController();
   final mistralKey3 = TextEditingController();
   final mistralModel = TextEditingController();
+
   final groqKey = TextEditingController();
   final groqKey2 = TextEditingController();
   final groqKey3 = TextEditingController();
+
   final pexelsKey = TextEditingController();
   final pixabayKey = TextEditingController();
+
   String testResult = '';
   bool testing = false;
 
   @override
   void initState() {
     super.initState();
+
     AppSettings.load().then((value) {
       if (!mounted) return;
+
       setState(() {
         settings = value;
+
         geminiKey.text = value.geminiKey;
         geminiModel.text = value.geminiModel;
         geminiKey2.text = value.geminiKey2;
         geminiKey3.text = value.geminiKey3;
+
         mistralKey.text = value.mistralKey;
         mistralKey2.text = value.mistralKey2;
         mistralKey3.text = value.mistralKey3;
         mistralModel.text = value.mistralModel;
+
         groqKey.text = value.groqKey;
         groqKey2.text = value.groqKey2;
         groqKey3.text = value.groqKey3;
+
         pexelsKey.text = value.pexelsKey;
         pixabayKey.text = value.pixabayKey;
       });
@@ -259,151 +328,459 @@ class _SettingsPageState extends State<SettingsPage> {
     geminiModel.dispose();
     geminiKey2.dispose();
     geminiKey3.dispose();
+
     mistralKey.dispose();
     mistralKey2.dispose();
     mistralKey3.dispose();
     mistralModel.dispose();
+
     groqKey.dispose();
     groqKey2.dispose();
     groqKey3.dispose();
+
     pexelsKey.dispose();
     pixabayKey.dispose();
+
     super.dispose();
   }
 
   void _apply() {
     final current = settings!;
+
     current.geminiKey = geminiKey.text;
     current.geminiModel = geminiModel.text;
     current.geminiKey2 = geminiKey2.text;
     current.geminiKey3 = geminiKey3.text;
+
     current.mistralKey = mistralKey.text;
     current.mistralKey2 = mistralKey2.text;
     current.mistralKey3 = mistralKey3.text;
     current.mistralModel = mistralModel.text;
+
     current.groqKey = groqKey.text;
     current.groqKey2 = groqKey2.text;
     current.groqKey3 = groqKey3.text;
+
     current.pexelsKey = pexelsKey.text;
     current.pixabayKey = pixabayKey.text;
   }
 
   Future<void> _test() async {
     _apply();
+
     setState(() {
       testing = true;
       testResult = '';
     });
+
     try {
-      await settings!.save(); // نحفظ أولاً عشان الاختبار والتصدير يستخدمون نفس القيم
+      await settings!.save();
+
       final lines = await AiRouter.testAll(settings!);
-      if (mounted) setState(() => testResult = '${lines.join('\n')}\n(تم حفظ المفاتيح)');
+
+      if (mounted) {
+        setState(() {
+          testResult = '${lines.join('\n')}\n(Keys saved)';
+        });
+      }
     } catch (e) {
-      if (mounted) setState(() => testResult = 'فشل ❌ $e');
+      if (mounted) {
+        setState(() => testResult = 'Failed ❌ $e');
+      }
     } finally {
-      if (mounted) setState(() => testing = false);
+      if (mounted) {
+        setState(() => testing = false);
+      }
     }
   }
 
-  Widget _field(TextEditingController controller, String label, {bool secret = false}) {
+  Widget _field(
+    TextEditingController controller,
+    String label, {
+    bool secret = false,
+  }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 9),
       child: TextField(
         controller: controller,
         obscureText: secret,
-        decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
+        ),
       ),
     );
   }
-
   @override
   Widget build(BuildContext context) {
     final current = settings;
-    if (current == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+
+    if (current == null) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final country = Languages.byCode(current.country);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('الإعدادات')),
+      appBar: AppBar(
+        title: Text(AppLocalizations.t('settings')),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('الدولة واللغة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+          Text(
+            AppLocalizations.t('countryLanguage'),
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 17,
+            ),
+          ),
           const SizedBox(height: 6),
           DropdownButtonFormField<String>(
             value: current.country,
             isExpanded: true,
-            decoration: const InputDecoration(border: OutlineInputBorder(), labelText: 'الدولة'),
+            decoration: InputDecoration(
+              border: const OutlineInputBorder(),
+              labelText: AppLocalizations.t('country'),
+            ),
             items: [
-              for (final c in Languages.countries) DropdownMenuItem(value: c.code, child: Text(c.name)),
+              for (final c in Languages.countries)
+                DropdownMenuItem(
+                  value: c.code,
+                  child: Text(c.name),
+                ),
             ],
-            onChanged: (value) => setState(() => current.country = value ?? current.country),
+            onChanged: (value) {
+              if (value == null) return;
+
+              setState(() {
+                current.country = value;
+              });
+
+              AppLocalizations.setLanguage(
+                Languages.byCode(value).lang,
+              );
+            },
           ),
           Padding(
             padding: const EdgeInsets.only(top: 6, bottom: 4),
             child: Text(
-              'لغة الكابشن: ${Languages.byCode(current.country).langName} ${Languages.byCode(current.country).dialect}'.trim(),
-              style: const TextStyle(fontSize: 12, color: Colors.white70),
+              '${AppLocalizations.t('captionLanguage')}: ${country.name}',
+              style: const TextStyle(
+                fontSize: 12,
+                color: Colors.white70,
+              ),
             ),
           ),
           const Divider(height: 32),
-          const Text('الذكاء الاصطناعي', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+          Text(
+            AppLocalizations.t('aiProviders'),
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 17,
+            ),
+          ),
           const SizedBox(height: 6),
-          const Text('النظام يستخدم كل المفاتيح بالتسلسل: لو مفتاح أو موديل فشل أو خلصت حصته ينتقل للتالي من نفس النقطة، وبعدها للمزود اللي بعده. غالباً الحد على الحساب وليس على المفتاح، فالمفتاح الاحتياطي يفيد فقط لو من حساب أو مشروع مختلف.', style: TextStyle(fontSize: 12, color: Colors.white70)),
+          Text(
+            AppLocalizations.t('aiDesc'),
+            style: const TextStyle(
+              fontSize: 12,
+              color: Colors.white70,
+            ),
+          ),
           const SizedBox(height: 10),
-          _field(geminiKey, 'مفتاح Gemini', secret: true),
-          _field(geminiModel, 'اسم نموذج Gemini'),
-          _field(geminiKey2, 'مفتاح Gemini احتياطي 2 (من مشروع مختلف)', secret: true),
-          _field(geminiKey3, 'مفتاح Gemini احتياطي 3 (من مشروع مختلف)', secret: true),
-          _field(groqKey, 'مفتاح Groq', secret: true),
-          _field(groqKey2, 'مفتاح Groq احتياطي 2', secret: true),
-          _field(groqKey3, 'مفتاح Groq احتياطي 3', secret: true),
-          _field(mistralKey, 'مفتاح Mistral', secret: true),
-          _field(mistralKey2, 'مفتاح Mistral احتياطي 2', secret: true),
-          _field(mistralKey3, 'مفتاح Mistral احتياطي 3', secret: true),
-          _field(mistralModel, 'اسم نموذج Mistral'),
-          FilledButton.tonal(onPressed: testing ? null : _test, child: Text(testing ? 'جاري الاختبار...' : 'احفظ واختبر المفاتيح')),
-          if (testResult.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8), child: SelectableText(testResult)),
+          _field(
+            geminiKey,
+            AppLocalizations.t('geminiKey'),
+            secret: true,
+          ),
+          _field(
+            geminiModel,
+            AppLocalizations.t('geminiModel'),
+          ),
+          _field(
+            geminiKey2,
+            AppLocalizations.t('geminiKey2'),
+            secret: true,
+          ),
+          _field(
+            geminiKey3,
+            AppLocalizations.t('geminiKey3'),
+            secret: true,
+          ),
+          _field(
+            groqKey,
+            AppLocalizations.t('groqKey'),
+            secret: true,
+          ),
+          _field(
+            groqKey2,
+            AppLocalizations.t('groqKey2'),
+            secret: true,
+          ),
+          _field(
+            groqKey3,
+            AppLocalizations.t('groqKey3'),
+            secret: true,
+          ),
+          _field(
+            mistralKey,
+            AppLocalizations.t('mistralKey'),
+            secret: true,
+          ),
+          _field(
+            mistralKey2,
+            AppLocalizations.t('mistralKey2'),
+            secret: true,
+          ),
+          _field(
+            mistralKey3,
+            AppLocalizations.t('mistralKey3'),
+            secret: true,
+          ),
+          _field(
+            mistralModel,
+            AppLocalizations.t('mistralModel'),
+          ),
+          FilledButton.tonal(
+            onPressed: testing ? null : _test,
+            child: Text(
+              testing
+                  ? AppLocalizations.t('testing')
+                  : AppLocalizations.t('saveTestKeys'),
+            ),
+          ),
+          if (testResult.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: SelectableText(testResult),
+            ),
           const Divider(height: 32),
-          const Text('ميزات المونتاج', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
-          SwitchListTile(title: const Text('تحسين الصوت'), subtitle: const Text('تقليل الضوضاء وموازنة مستوى الصوت وضغطه'), value: current.enhanceAudio, onChanged: (value) => setState(() => current.enhanceAudio = value)),
-          SwitchListTile(title: const Text('تحسينات بصرية'), subtitle: const Text('ألوان وتأثيرات بصرية (قد تبطّئ التصدير)'), value: current.visualEffects, onChanged: (value) => setState(() => current.visualEffects = value)),
+          Text(
+            AppLocalizations.t('editingFeatures'),
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 17,
+            ),
+          ),
+          SwitchListTile(
+            title: Text(AppLocalizations.t('audioEnhance')),
+            subtitle: Text(AppLocalizations.t('audioEnhanceDesc')),
+            value: current.enhanceAudio,
+            onChanged: (value) {
+              setState(() => current.enhanceAudio = value);
+            },
+          ),
+          SwitchListTile(
+            title: Text(AppLocalizations.t('visualEffects')),
+            subtitle: Text(AppLocalizations.t('visualEffectsDesc')),
+            value: current.visualEffects,
+            onChanged: (value) {
+              setState(() => current.visualEffects = value);
+            },
+          ),
           if (current.visualEffects) ...[
-            const Padding(padding: EdgeInsets.only(top: 6), child: Text('نمط الألوان')),
-            RadioListTile<String>(title: const Text('نظيف (تباين وحدة خفيفة)'), value: 'clean', groupValue: current.visualStyle, onChanged: (value) => setState(() => current.visualStyle = value!)),
-            RadioListTile<String>(title: const Text('سينمائي (ألوان دافئة وباردة + تظليل)'), value: 'cinematic', groupValue: current.visualStyle, onChanged: (value) => setState(() => current.visualStyle = value!)),
-            RadioListTile<String>(title: const Text('حيوي (ألوان أقوى)'), value: 'vivid', groupValue: current.visualStyle, onChanged: (value) => setState(() => current.visualStyle = value!)),
-            SwitchListTile(title: const Text('تقريب سريع عند القطع (Punch-in)'), subtitle: const Text('يكبّر اللقطة بالتناوب ليبدو القطع مقصودًا'), value: current.punchZoom, onChanged: (value) => setState(() => current.punchZoom = value)),
-            SwitchListTile(title: const Text('وميض انتقالي عند B-roll'), value: current.flashTransitions, onChanged: (value) => setState(() => current.flashTransitions = value)),
-            SwitchListTile(title: const Text('شريط تقدم أسفل الفيديو'), subtitle: const Text('يشجع المشاهد على إكمال الفيديو'), value: current.progressBar, onChanged: (value) => setState(() => current.progressBar = value)),
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(AppLocalizations.t('colorStyle')),
+            ),
+            RadioListTile<String>(
+              title: Text(AppLocalizations.t('clean')),
+              value: 'clean',
+              groupValue: current.visualStyle,
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => current.visualStyle = value);
+              },
+            ),
+            RadioListTile<String>(
+              title: Text(AppLocalizations.t('cinematic')),
+              value: 'cinematic',
+              groupValue: current.visualStyle,
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => current.visualStyle = value);
+              },
+            ),
+            RadioListTile<String>(
+              title: Text(AppLocalizations.t('vivid')),
+              value: 'vivid',
+              groupValue: current.visualStyle,
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => current.visualStyle = value);
+              },
+            ),
+            SwitchListTile(
+              title: Text(AppLocalizations.t('punchZoom')),
+              subtitle: Text(AppLocalizations.t('punchZoomDesc')),
+              value: current.punchZoom,
+              onChanged: (value) {
+                setState(() => current.punchZoom = value);
+              },
+            ),
+            SwitchListTile(
+              title: Text(AppLocalizations.t('flashTransitions')),
+              value: current.flashTransitions,
+              onChanged: (value) {
+                setState(() => current.flashTransitions = value);
+              },
+            ),
+            SwitchListTile(
+              title: Text(AppLocalizations.t('progressBar')),
+              subtitle: Text(AppLocalizations.t('progressBarDesc')),
+              value: current.progressBar,
+              onChanged: (value) {
+                setState(() => current.progressBar = value);
+              },
+            ),
           ],
-          SwitchListTile(title: const Text('إضافة كابشن'), subtitle: const Text('عطّله إذا كان الفيديو يحتوي على كابشن جاهز'), value: current.captions, onChanged: (value) => setState(() => current.captions = value)),
-          SwitchListTile(title: const Text('عنوان جذاب في أول 3 ثوانٍ'), value: current.hook, onChanged: (value) => setState(() => current.hook = value)),
-          SwitchListTile(title: const Text('B-roll (مقاطع توضيحية)'), subtitle: const Text('يحتاج مفتاح Pexels أو Pixabay واتصالًا بالإنترنت'), value: current.broll, onChanged: (value) => setState(() => current.broll = value)),
-          SwitchListTile(title: const Text('مؤثرات صوتية انتقالية'), value: current.sfx, onChanged: (value) => setState(() => current.sfx = value)),
+          SwitchListTile(
+            title: Text(AppLocalizations.t('captions')),
+            subtitle: Text(AppLocalizations.t('captionsDesc')),
+            value: current.captions,
+            onChanged: (value) {
+              setState(() => current.captions = value);
+            },
+          ),
+          SwitchListTile(
+            title: Text(AppLocalizations.t('hook')),
+            value: current.hook,
+            onChanged: (value) {
+              setState(() => current.hook = value);
+            },
+          ),
+          SwitchListTile(
+            title: Text(AppLocalizations.t('broll')),
+            subtitle: Text(AppLocalizations.t('brollDesc')),
+            value: current.broll,
+            onChanged: (value) {
+              setState(() => current.broll = value);
+            },
+          ),
+          SwitchListTile(
+            title: Text(AppLocalizations.t('sfx')),
+            value: current.sfx,
+            onChanged: (value) {
+              setState(() => current.sfx = value);
+            },
+          ),
           const SizedBox(height: 8),
-          const Text('مصدر مقاطع B-roll'),
-          RadioListTile<String>(title: const Text('Pexels'), value: 'pexels', groupValue: current.brollProvider, onChanged: (value) => setState(() => current.brollProvider = value!)),
-          RadioListTile<String>(title: const Text('Pixabay'), value: 'pixabay', groupValue: current.brollProvider, onChanged: (value) => setState(() => current.brollProvider = value!)),
-          _field(pexelsKey, 'مفتاح Pexels', secret: true),
-          _field(pixabayKey, 'مفتاح Pixabay', secret: true),
+          Text(AppLocalizations.t('brollSource')),
+          RadioListTile<String>(
+            title: const Text('Pexels'),
+            value: 'pexels',
+            groupValue: current.brollProvider,
+            onChanged: (value) {
+              if (value == null) return;
+              setState(() => current.brollProvider = value);
+            },
+          ),
+          RadioListTile<String>(
+            title: const Text('Pixabay'),
+            value: 'pixabay',
+            groupValue: current.brollProvider,
+            onChanged: (value) {
+              if (value == null) return;
+              setState(() => current.brollProvider = value);
+            },
+          ),
+          _field(
+            pexelsKey,
+            AppLocalizations.t('pexelsKey'),
+            secret: true,
+          ),
+          _field(
+            pixabayKey,
+            AppLocalizations.t('pixabayKey'),
+            secret: true,
+          ),
           const Divider(height: 32),
-          const Text('التصدير', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
-          SwitchListTile(title: const Text('دقة 2K'), subtitle: const Text('تستهلك وقتًا وذاكرة أكبر على الجوال'), value: current.upscale2k, onChanged: (value) => setState(() => current.upscale2k = value)),
-          Text('الحجم المستهدف: ${current.targetMb.toStringAsFixed(0)} ميجا لكل 30 ثانية'),
-          Slider(min: 6, max: 20, divisions: 14, value: current.targetMb, onChanged: (value) => setState(() => current.targetMb = value)),
+          Text(
+            AppLocalizations.t('export'),
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 17,
+            ),
+          ),
+          SwitchListTile(
+            title: Text(AppLocalizations.t('resolution2k')),
+            subtitle: Text(AppLocalizations.t('resolution2kDesc')),
+            value: current.upscale2k,
+            onChanged: (value) {
+              setState(() => current.upscale2k = value);
+            },
+          ),
+          Text(
+            AppLocalizations.t(
+              'targetSize',
+              args: {'size': current.targetMb.toStringAsFixed(0)},
+            ),
+          ),
+          Slider(
+            min: 6,
+            max: 20,
+            divisions: 14,
+            value: current.targetMb,
+            onChanged: (value) {
+              setState(() => current.targetMb = value);
+            },
+          ),
           const Divider(height: 32),
-          Text('حساسية السكتة: ${current.noiseDb.toStringAsFixed(0)} dB'),
-          const Text('(القيمة الأقل تقص الأصوات الخافتة أكثر)', style: TextStyle(fontSize: 12, color: Colors.white70)),
-          Slider(min: -50, max: -15, divisions: 35, value: current.noiseDb, onChanged: (value) => setState(() => current.noiseDb = value)),
-          Text('أقل مدة سكتة تُقص: ${current.minSilence.toStringAsFixed(1)} ثانية'),
-          Slider(min: 0.3, max: 1.5, divisions: 12, value: current.minSilence, onChanged: (value) => setState(() => current.minSilence = value)),
+          Text(
+            AppLocalizations.t(
+              'silenceSensitivity',
+              args: {'value': current.noiseDb.toStringAsFixed(0)},
+            ),
+          ),
+          Text(
+            AppLocalizations.t('silenceDesc'),
+            style: const TextStyle(
+              fontSize: 12,
+              color: Colors.white70,
+            ),
+          ),
+          Slider(
+            min: -50,
+            max: -15,
+            divisions: 35,
+            value: current.noiseDb,
+            onChanged: (value) {
+              setState(() => current.noiseDb = value);
+            },
+          ),
+          Text(
+            AppLocalizations.t(
+              'minimumSilence',
+              args: {'value': current.minSilence.toStringAsFixed(1)},
+            ),
+          ),
+          Slider(
+            min: 0.3,
+            max: 1.5,
+            divisions: 12,
+            value: current.minSilence,
+            onChanged: (value) {
+              setState(() => current.minSilence = value);
+            },
+          ),
           const SizedBox(height: 18),
           FilledButton(
             onPressed: () async {
               _apply();
               await current.save();
-              if (context.mounted) Navigator.pop(context);
+
+              if (!context.mounted) return;
+
+              AppLocalizations.setLanguage(
+                Languages.byCode(current.country).lang,
+              );
+
+              Navigator.pop(context);
             },
-            child: const Text('حفظ الإعدادات'),
+            child: Text(AppLocalizations.t('saveSettings')),
           ),
         ],
       ),
