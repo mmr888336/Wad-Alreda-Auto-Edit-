@@ -1,55 +1,57 @@
-/// الدول واللغات. اختيار الدولة يحدد لغة التفريغ والكابشن ولهجته.
+/// الدول واللغات. اختيار الدولة يحدد لغة التفريغ والكابشن ولهجته. الافتراضي: English.
 class Country {
   final String code;
   final String name; // اسم الدولة (يظهر في القائمة)
   final String lang; // رمز اللغة ISO-639-1 (يستخدمه Whisper)
   final String langName; // اسم اللغة للشرح
-  final String dialect; // وصف اللهجة (للعربية)
+  final String dialect; // وصف اللهجة
   const Country(this.code, this.name, this.lang, this.langName, [this.dialect = '']);
 }
 
 class Languages {
+  static const defaultCode = 'US';
+
   static const countries = <Country>[
+    // ---- الإنجليزية (الافتراضي) ----
+    Country('US', 'English (USA)', 'en', 'الإنجليزية', 'American English'),
+    Country('GB', 'English (UK)', 'en', 'الإنجليزية', 'British English'),
+    Country('AU', 'English (Australia)', 'en', 'الإنجليزية', 'Australian English'),
+    Country('CA', 'English (Canada)', 'en', 'الإنجليزية', 'Canadian English'),
     // ---- الدول العربية ----
-    Country('SD', 'السودان', 'ar', 'العربية', 'بلهجة سودانية'),
-    Country('EG', 'مصر', 'ar', 'العربية', 'بلهجة مصرية'),
-    Country('SA', 'السعودية', 'ar', 'العربية', 'بلهجة سعودية'),
-    Country('AE', 'الإمارات', 'ar', 'العربية', 'بلهجة خليجية'),
-    Country('QA', 'قطر', 'ar', 'العربية', 'بلهجة خليجية'),
-    Country('KW', 'الكويت', 'ar', 'العربية', 'بلهجة خليجية'),
-    Country('IQ', 'العراق', 'ar', 'العربية', 'بلهجة عراقية'),
-    Country('JO', 'الأردن', 'ar', 'العربية', 'بلهجة شامية'),
-    Country('PS', 'فلسطين', 'ar', 'العربية', 'بلهجة شامية'),
-    Country('LB', 'لبنان', 'ar', 'العربية', 'بلهجة شامية'),
-    Country('SY', 'سوريا', 'ar', 'العربية', 'بلهجة شامية'),
-    Country('YE', 'اليمن', 'ar', 'العربية', 'بلهجة يمنية'),
-    Country('LY', 'ليبيا', 'ar', 'العربية', 'بلهجة ليبية'),
-    Country('TN', 'تونس', 'ar', 'العربية', 'بلهجة تونسية'),
-    Country('DZ', 'الجزائر', 'ar', 'العربية', 'بلهجة جزائرية'),
-    Country('MA', 'المغرب', 'ar', 'العربية', 'بالدارجة المغربية'),
-    Country('MR', 'موريتانيا', 'ar', 'العربية', 'بلهجة حسانية'),
-    // ---- الإنجليزية ----
-    Country('US', 'أمريكا (English)', 'en', 'الإنجليزية', 'American English'),
-    Country('GB', 'بريطانيا (English)', 'en', 'الإنجليزية', 'British English'),
-    Country('AU', 'أستراليا (English)', 'en', 'الإنجليزية', 'Australian English'),
-    Country('CA', 'كندا (English)', 'en', 'الإنجليزية', 'Canadian English'),
+    Country('SD', 'العربية - السودان', 'ar', 'العربية', 'بلهجة سودانية'),
+    Country('EG', 'العربية - مصر', 'ar', 'العربية', 'بلهجة مصرية'),
+    Country('SA', 'العربية - السعودية', 'ar', 'العربية', 'بلهجة سعودية'),
+    Country('AE', 'العربية - الإمارات', 'ar', 'العربية', 'بلهجة خليجية'),
+    Country('QA', 'العربية - قطر', 'ar', 'العربية', 'بلهجة خليجية'),
+    Country('KW', 'العربية - الكويت', 'ar', 'العربية', 'بلهجة خليجية'),
+    Country('IQ', 'العربية - العراق', 'ar', 'العربية', 'بلهجة عراقية'),
+    Country('JO', 'العربية - الأردن', 'ar', 'العربية', 'بلهجة شامية'),
+    Country('PS', 'العربية - فلسطين', 'ar', 'العربية', 'بلهجة شامية'),
+    Country('LB', 'العربية - لبنان', 'ar', 'العربية', 'بلهجة شامية'),
+    Country('SY', 'العربية - سوريا', 'ar', 'العربية', 'بلهجة شامية'),
+    Country('YE', 'العربية - اليمن', 'ar', 'العربية', 'بلهجة يمنية'),
+    Country('LY', 'العربية - ليبيا', 'ar', 'العربية', 'بلهجة ليبية'),
+    Country('TN', 'العربية - تونس', 'ar', 'العربية', 'بلهجة تونسية'),
+    Country('DZ', 'العربية - الجزائر', 'ar', 'العربية', 'بلهجة جزائرية'),
+    Country('MA', 'العربية - المغرب', 'ar', 'العربية', 'بالدارجة المغربية'),
+    Country('MR', 'العربية - موريتانيا', 'ar', 'العربية', 'بلهجة حسانية'),
     // ---- أمريكا اللاتينية وإسبانيا ----
-    Country('ES', 'إسبانيا (Español)', 'es', 'الإسبانية', 'español de España'),
-    Country('MX', 'المكسيك (Español)', 'es', 'الإسبانية', 'español latinoamericano'),
-    Country('AR', 'الأرجنتين (Español)', 'es', 'الإسبانية', 'español latinoamericano'),
-    Country('CO', 'كولومبيا (Español)', 'es', 'الإسبانية', 'español latinoamericano'),
-    Country('BR', 'البرازيل (Português)', 'pt', 'البرتغالية', 'português do Brasil'),
+    Country('ES', 'Español (España)', 'es', 'الإسبانية', 'español de España'),
+    Country('MX', 'Español (México)', 'es', 'الإسبانية', 'español latinoamericano'),
+    Country('AR', 'Español (Argentina)', 'es', 'الإسبانية', 'español latinoamericano'),
+    Country('CO', 'Español (Colombia)', 'es', 'الإسبانية', 'español latinoamericano'),
+    Country('BR', 'Português (Brasil)', 'pt', 'البرتغالية', 'português do Brasil'),
+    Country('PT', 'Português (Portugal)', 'pt', 'البرتغالية', 'português de Portugal'),
     // ---- أوروبا ----
-    Country('PT', 'البرتغال (Português)', 'pt', 'البرتغالية', 'português de Portugal'),
-    Country('FR', 'فرنسا (Français)', 'fr', 'الفرنسية'),
-    Country('DE', 'ألمانيا (Deutsch)', 'de', 'الألمانية'),
-    Country('IT', 'إيطاليا (Italiano)', 'it', 'الإيطالية'),
-    Country('NL', 'هولندا (Nederlands)', 'nl', 'الهولندية'),
-    Country('PL', 'بولندا (Polski)', 'pl', 'البولندية'),
-    Country('SE', 'السويد (Svenska)', 'sv', 'السويدية'),
-    Country('GR', 'اليونان (Ελληνικά)', 'el', 'اليونانية'),
-    Country('RU', 'روسيا (Русский)', 'ru', 'الروسية'),
-    Country('TR', 'تركيا (Türkçe)', 'tr', 'التركية'),
+    Country('FR', 'Français', 'fr', 'الفرنسية'),
+    Country('DE', 'Deutsch', 'de', 'الألمانية'),
+    Country('IT', 'Italiano', 'it', 'الإيطالية'),
+    Country('NL', 'Nederlands', 'nl', 'الهولندية'),
+    Country('PL', 'Polski', 'pl', 'البولندية'),
+    Country('SE', 'Svenska', 'sv', 'السويدية'),
+    Country('GR', 'Ελληνικά', 'el', 'اليونانية'),
+    Country('RU', 'Русский', 'ru', 'الروسية'),
+    Country('TR', 'Türkçe', 'tr', 'التركية'),
   ];
 
   static Country byCode(String code) {
