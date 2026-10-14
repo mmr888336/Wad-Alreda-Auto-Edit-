@@ -14,8 +14,13 @@ class AppSettings {
   String geminiKey3;
   String country;
   String mistralKey;
+  String mistralKey2;
+  String mistralKey3;
   String mistralModel;
   String groqKey;
+  String groqKey2;
+  String groqKey3;
+  bool onboarded;
   double noiseDb;
   double minSilence;
   bool captions;
@@ -40,10 +45,15 @@ class AppSettings {
     this.geminiModel = 'gemini-3.8-flash',
     this.geminiKey2 = '',
     this.geminiKey3 = '',
-    this.country = 'SD',
+    this.country = 'US',
     this.mistralKey = '',
+    this.mistralKey2 = '',
+    this.mistralKey3 = '',
     this.mistralModel = 'mistral-small-latest',
     this.groqKey = '',
+    this.groqKey2 = '',
+    this.groqKey3 = '',
+    this.onboarded = false,
     this.noiseDb = -30,
     this.minSilence = 0.5,
     this.captions = true,
@@ -71,12 +81,20 @@ class AppSettings {
       .where((k) => k.isNotEmpty)
       .toList();
 
+  List<String> get groqKeys => [groqKey, groqKey2, groqKey3]
+      .map((k) => k.trim())
+      .where((k) => k.isNotEmpty)
+      .toList();
+
+  List<String> get mistralKeys => [mistralKey, mistralKey2, mistralKey3]
+      .map((k) => k.trim())
+      .where((k) => k.isNotEmpty)
+      .toList();
+
   String get lang => Languages.byCode(country).lang;
 
   bool get hasAnyAiKey =>
-      geminiKeys.isNotEmpty ||
-      groqKey.trim().isNotEmpty ||
-      mistralKey.trim().isNotEmpty;
+      geminiKeys.isNotEmpty || groqKeys.isNotEmpty || mistralKeys.isNotEmpty;
 
   static Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -86,10 +104,15 @@ class AppSettings {
       geminiModel: prefs.getString('geminiModel') ?? 'gemini-3.8-flash',
       geminiKey2: prefs.getString('geminiKey2') ?? '',
       geminiKey3: prefs.getString('geminiKey3') ?? '',
-      country: prefs.getString('country') ?? 'SD',
+      country: prefs.getString('country') ?? 'US',
       mistralKey: prefs.getString('mistralKey') ?? '',
+      mistralKey2: prefs.getString('mistralKey2') ?? '',
+      mistralKey3: prefs.getString('mistralKey3') ?? '',
       mistralModel: prefs.getString('mistralModel') ?? 'mistral-small-latest',
       groqKey: prefs.getString('groqKey') ?? '',
+      groqKey2: prefs.getString('groqKey2') ?? '',
+      groqKey3: prefs.getString('groqKey3') ?? '',
+      onboarded: prefs.getBool('onboarded') ?? false,
       noiseDb: prefs.getDouble('noiseDb') ?? -30,
       minSilence: prefs.getDouble('minSilence') ?? 0.5,
       captions: prefs.getBool('captions') ?? true,
@@ -119,8 +142,13 @@ class AppSettings {
     await prefs.setString('geminiKey3', geminiKey3.trim());
     await prefs.setString('country', country);
     await prefs.setString('mistralKey', mistralKey.trim());
+    await prefs.setString('mistralKey2', mistralKey2.trim());
+    await prefs.setString('mistralKey3', mistralKey3.trim());
     await prefs.setString('mistralModel', mistralModel.trim());
     await prefs.setString('groqKey', groqKey.trim());
+    await prefs.setString('groqKey2', groqKey2.trim());
+    await prefs.setString('groqKey3', groqKey3.trim());
+    await prefs.setBool('onboarded', onboarded);
     await prefs.setDouble('noiseDb', noiseDb);
     await prefs.setDouble('minSilence', minSilence);
     await prefs.setBool('captions', captions);
@@ -190,8 +218,12 @@ class _SettingsPageState extends State<SettingsPage> {
   final geminiKey2 = TextEditingController();
   final geminiKey3 = TextEditingController();
   final mistralKey = TextEditingController();
+  final mistralKey2 = TextEditingController();
+  final mistralKey3 = TextEditingController();
   final mistralModel = TextEditingController();
   final groqKey = TextEditingController();
+  final groqKey2 = TextEditingController();
+  final groqKey3 = TextEditingController();
   final pexelsKey = TextEditingController();
   final pixabayKey = TextEditingController();
   String testResult = '';
@@ -209,8 +241,12 @@ class _SettingsPageState extends State<SettingsPage> {
         geminiKey2.text = value.geminiKey2;
         geminiKey3.text = value.geminiKey3;
         mistralKey.text = value.mistralKey;
+        mistralKey2.text = value.mistralKey2;
+        mistralKey3.text = value.mistralKey3;
         mistralModel.text = value.mistralModel;
         groqKey.text = value.groqKey;
+        groqKey2.text = value.groqKey2;
+        groqKey3.text = value.groqKey3;
         pexelsKey.text = value.pexelsKey;
         pixabayKey.text = value.pixabayKey;
       });
@@ -224,8 +260,12 @@ class _SettingsPageState extends State<SettingsPage> {
     geminiKey2.dispose();
     geminiKey3.dispose();
     mistralKey.dispose();
+    mistralKey2.dispose();
+    mistralKey3.dispose();
     mistralModel.dispose();
     groqKey.dispose();
+    groqKey2.dispose();
+    groqKey3.dispose();
     pexelsKey.dispose();
     pixabayKey.dispose();
     super.dispose();
@@ -238,8 +278,12 @@ class _SettingsPageState extends State<SettingsPage> {
     current.geminiKey2 = geminiKey2.text;
     current.geminiKey3 = geminiKey3.text;
     current.mistralKey = mistralKey.text;
+    current.mistralKey2 = mistralKey2.text;
+    current.mistralKey3 = mistralKey3.text;
     current.mistralModel = mistralModel.text;
     current.groqKey = groqKey.text;
+    current.groqKey2 = groqKey2.text;
+    current.groqKey3 = groqKey3.text;
     current.pexelsKey = pexelsKey.text;
     current.pixabayKey = pixabayKey.text;
   }
@@ -303,14 +347,18 @@ class _SettingsPageState extends State<SettingsPage> {
           const Divider(height: 32),
           const Text('الذكاء الاصطناعي', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
           const SizedBox(height: 6),
-          const Text('النظام يجرّب مفاتيح Gemini أولاً، وإذا فشلت (مثل خلوص الحصة) ينتقل تلقائيًا إلى Groq ثم Mistral حسب المفاتيح الموجودة. حصة Gemini المجانية لكل مشروع وليس لكل مفتاح، فالمفتاح الاحتياطي لازم يكون من مشروع مختلف في AI Studio.', style: TextStyle(fontSize: 12, color: Colors.white70)),
+          const Text('النظام يستخدم كل المفاتيح بالتسلسل: لو مفتاح أو موديل فشل أو خلصت حصته ينتقل للتالي من نفس النقطة، وبعدها للمزود اللي بعده. غالباً الحد على الحساب وليس على المفتاح، فالمفتاح الاحتياطي يفيد فقط لو من حساب أو مشروع مختلف.', style: TextStyle(fontSize: 12, color: Colors.white70)),
           const SizedBox(height: 10),
           _field(geminiKey, 'مفتاح Gemini', secret: true),
           _field(geminiModel, 'اسم نموذج Gemini'),
           _field(geminiKey2, 'مفتاح Gemini احتياطي 2 (من مشروع مختلف)', secret: true),
           _field(geminiKey3, 'مفتاح Gemini احتياطي 3 (من مشروع مختلف)', secret: true),
           _field(groqKey, 'مفتاح Groq', secret: true),
+          _field(groqKey2, 'مفتاح Groq احتياطي 2', secret: true),
+          _field(groqKey3, 'مفتاح Groq احتياطي 3', secret: true),
           _field(mistralKey, 'مفتاح Mistral', secret: true),
+          _field(mistralKey2, 'مفتاح Mistral احتياطي 2', secret: true),
+          _field(mistralKey3, 'مفتاح Mistral احتياطي 3', secret: true),
           _field(mistralModel, 'اسم نموذج Mistral'),
           FilledButton.tonal(onPressed: testing ? null : _test, child: Text(testing ? 'جاري الاختبار...' : 'احفظ واختبر المفاتيح')),
           if (testResult.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8), child: SelectableText(testResult)),
