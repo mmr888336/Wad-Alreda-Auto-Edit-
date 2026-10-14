@@ -186,7 +186,6 @@ class WelcomePage extends StatelessWidget {
     );
   }
 }
-
 class _PipelineOut {
   final CutResult cut;
   final EnhanceResult enhanced;
