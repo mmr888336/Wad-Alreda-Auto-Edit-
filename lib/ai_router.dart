@@ -34,6 +34,22 @@ class GeminiTarget {
   GeminiTarget(this.key, this.model, this.label);
 }
 
+/// مفتاح + موديل لمزود (Groq أو Mistral) مع اسم يظهر في الملاحظات
+class KeyedModel {
+  final String key;
+  final String model;
+  final String label;
+  KeyedModel(this.key, this.model, this.label);
+}
+
+/// موديلات Groq المتاحة لحسابك، مصنفة حسب الوظيفة (نكتشفها من واجهة Groq نفسها)
+class GroqModels {
+  final List<String> stt; // تفريغ صوت (Whisper)
+  final List<String> text; // نص (عنوان، وصف، أفكار B-roll)
+  final List<String> vision; // مرشحة لفهم الصور
+  GroqModels(this.stt, this.text, this.vision);
+}
+
 class AiResult<T> {
   final T value;
   final String label;
@@ -107,13 +123,14 @@ class AiRouter {
   static const _geminiBase = 'https://generativelanguage.googleapis.com/v1beta';
   static final Map<String, List<String>> _modelCache = {};
 
-  /// موديل المستخدم أولاً، ثم أحدث موديلات flash المتاحة لمفتاحه (نكتشفها من جوجل).
+  /// موديلات Lite أولاً (حصتها المجانية أكبر بكثير: حوالي 500 طلب في اليوم)، ثم موديل المستخدم، ثم باقي flash.
   static Future<List<String>> _modelsFor(String key, String saved) async {
-    final out = <String>[];
-    if (saved.isNotEmpty) out.add(saved);
     final found = _modelCache[key] ?? await _discover(key);
     _modelCache[key] = found;
-    for (final m in found) {
+    final lite = found.where((m) => m.contains('lite')).toList();
+    final rest = found.where((m) => !m.contains('lite')).toList();
+    final out = <String>[];
+    for (final m in [...lite, if (saved.isNotEmpty) saved, ...rest]) {
       if (!out.contains(m)) out.add(m);
     }
     return out.take(3).toList();
@@ -212,10 +229,93 @@ class AiRouter {
 
   // ---------------- Mistral / Groq (صيغة OpenAI) ----------------
 
-  static const groqChatModel = 'llama-3.3-70b-versatile';
-  static const groqVisionModel = 'meta-llama/llama-4-scout-17b-16e-instruct';
-  static const groqWhisperTurbo = 'whisper-large-v3-turbo';
-  static const groqWhisperV3 = 'whisper-large-v3';
+  // أسماء احتياطية تُستخدم فقط لو فشل اكتشاف الموديلات من Groq
+  static const _groqDefaultStt = ['whisper-large-v3-turbo', 'whisper-large-v3'];
+  static const _groqDefaultText = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+
+  static final Map<String, GroqModels> _groqCache = {};
+
+  static int _textRank(String id) {
+    final low = id.toLowerCase();
+    if (low.contains('120b')) return 30;
+    if (low.contains('70b')) return 28;
+    if (low.contains('20b')) return 20;
+    return 10;
+  }
+
+  /// يجلب الموديلات المتاحة لمفتاح Groq ويصنفها. أي موديل جديد يظهر في حسابك يدخل تلقائياً.
+  static Future<GroqModels> _groqModelsForKey(String key) async {
+    final cached = _groqCache[key];
+    if (cached != null) return cached;
+    final stt = <String>[];
+    final text = <String>[];
+    final vision = <String>[];
+    var ok = false;
+    try {
+      final r = await http.get(Uri.parse('https://api.groq.com/openai/v1/models'),
+          headers: {'Authorization': 'Bearer $key'}).timeout(const Duration(seconds: 12));
+      if (r.statusCode == 200) {
+        ok = true;
+        final list = (jsonDecode(utf8.decode(r.bodyBytes))['data'] as List?) ?? [];
+        for (final m in list) {
+          if (m['active'] == false) continue;
+          final id = '${m['id']}';
+          final low = id.toLowerCase();
+          if (low.contains('whisper')) {
+            stt.add(id);
+          } else if (RegExp(r'orpheus|guard|tts|embed|moderation').hasMatch(low)) {
+            continue;
+          } else {
+            text.add(id);
+            if (RegExp(r'scout|maverick|vision|qwen').hasMatch(low)) vision.add(id);
+          }
+        }
+      }
+    } catch (_) {}
+    stt.sort((a, b) => (b.contains('turbo') ? 1 : 0) - (a.contains('turbo') ? 1 : 0));
+    text.sort((a, b) => _textRank(b).compareTo(_textRank(a)));
+    if (stt.isEmpty) stt.addAll(_groqDefaultStt);
+    if (text.isEmpty) text.addAll(_groqDefaultText);
+    final res = GroqModels(stt, text, vision);
+    if (ok) _groqCache[key] = res;
+    return res;
+  }
+
+  /// قائمة (مفتاح + موديل) لـ Groq بالترتيب: أفضل موديل عبر كل المفاتيح أولاً، ثم الموديل التالي.
+  /// kind: 'stt' (تفريغ صوت) أو 'text' (نص) أو 'vision' (صور)
+  static Future<List<KeyedModel>> groqTargets(AppSettings s, String kind) async {
+    final keys = s.groqKeys;
+    if (keys.isEmpty) return [];
+    final lists = <List<String>>[];
+    for (final k in keys) {
+      final gm = await _groqModelsForKey(k);
+      lists.add(kind == 'stt' ? gm.stt : (kind == 'vision' ? gm.vision : gm.text));
+    }
+    var maxLen = 0;
+    for (final l in lists) {
+      if (l.length > maxLen) maxLen = l.length;
+    }
+    final out = <KeyedModel>[];
+    for (var j = 0; j < maxLen; j++) {
+      for (var i = 0; i < keys.length; i++) {
+        if (j < lists[i].length) {
+          final tag = keys.length > 1 ? ' #${i + 1}' : '';
+          out.add(KeyedModel(keys[i], lists[i][j], 'Groq$tag ${lists[i][j]}'));
+        }
+      }
+    }
+    return out;
+  }
+
+  /// قائمة (مفتاح + موديل) لـ Mistral، واحد لكل مفتاح.
+  static List<KeyedModel> mistralTargets(AppSettings s) {
+    final keys = s.mistralKeys;
+    final model = s.mistralModel.trim();
+    return [
+      for (var i = 0; i < keys.length; i++)
+        KeyedModel(keys[i], model, 'Mistral${keys.length > 1 ? ' #${i + 1}' : ''} $model'),
+    ];
+  }
 
   static Future<String> chat(String provider, String url, String key,
       String model, List<Map<String, dynamic>> messages,
@@ -249,27 +349,26 @@ class AiRouter {
     return text;
   }
 
-  static Future<String> mistral(AppSettings s, List<Map<String, dynamic>> messages,
+  static Future<String> mistral(KeyedModel t, List<Map<String, dynamic>> messages,
           {bool json = true}) =>
-      chat('Mistral', 'https://api.mistral.ai/v1/chat/completions',
-          s.mistralKey, s.mistralModel.trim(), messages,
+      chat('Mistral', 'https://api.mistral.ai/v1/chat/completions', t.key,
+          t.model, messages,
           json: json);
 
-  static Future<String> groq(AppSettings s, String model,
-          List<Map<String, dynamic>> messages,
+  static Future<String> groq(KeyedModel t, List<Map<String, dynamic>> messages,
           {bool json = true}) =>
-      chat('Groq', 'https://api.groq.com/openai/v1/chat/completions',
-          s.groqKey, model, messages,
+      chat('Groq', 'https://api.groq.com/openai/v1/chat/completions', t.key,
+          t.model, messages,
           json: json);
 
   /// تحويل صوت لنص بـ Whisper على Groq. يرجع مقاطع: start / end / text
   static Future<List<Map<String, dynamic>>> groqTranscribe(
-      AppSettings s, String model, Uint8List bytes,
+      KeyedModel t, Uint8List bytes,
       {String? language}) async {
     final req = http.MultipartRequest(
         'POST', Uri.parse('https://api.groq.com/openai/v1/audio/transcriptions'))
-      ..headers['Authorization'] = 'Bearer ${s.groqKey.trim()}'
-      ..fields['model'] = model
+      ..headers['Authorization'] = 'Bearer ${t.key}'
+      ..fields['model'] = t.model
       ..fields['response_format'] = 'verbose_json'
       ..fields['temperature'] = '0'
       ..fields.addAll(
@@ -278,7 +377,7 @@ class AiRouter {
           http.MultipartFile.fromBytes('file', bytes, filename: 'chunk.wav'));
     final streamed = await req.send().timeout(const Duration(seconds: 120));
     final r = await http.Response.fromStream(streamed);
-    if (r.statusCode != 200) throw _fail('Groq $model', r);
+    if (r.statusCode != 200) throw _fail('Groq ${t.model}', r);
     final j = jsonDecode(utf8.decode(r.bodyBytes));
     final segs = (j['segments'] as List?) ?? [];
     return segs
@@ -316,37 +415,39 @@ class AiRouter {
     } else {
       lines.add('Gemini — بدون مفتاح');
     }
-    if (s.groqKey.trim().isNotEmpty) {
+    final gkeys = s.groqKeys;
+    if (gkeys.isEmpty) lines.add('Groq — بدون مفتاح');
+    for (var i = 0; i < gkeys.length; i++) {
+      final tag = gkeys.length > 1 ? ' #${i + 1}' : '';
       try {
+        final gm = await _groqModelsForKey(gkeys[i]);
         await groq(
-            s,
-            groqChatModel,
+            KeyedModel(gkeys[i], gm.text.first, ''),
             [
               {'role': 'user', 'content': ping}
             ],
             json: false);
-        lines.add('Groq ✅');
+        lines.add(
+            'Groq$tag ✅ ${gm.text.first} (نص: ${gm.text.length}، تفريغ صوت: ${gm.stt.length}، صور: ${gm.vision.length})');
       } catch (e) {
-        lines.add('Groq ❌ ${cut('$e')}');
+        lines.add('Groq$tag ❌ ${cut('$e')}');
       }
-    } else {
-      lines.add('Groq — بدون مفتاح');
     }
-    if (s.mistralKey.trim().isNotEmpty) {
+    final mkeys = mistralTargets(s);
+    if (mkeys.isEmpty) lines.add('Mistral — بدون مفتاح');
+    for (final t in mkeys) {
       try {
         await mistral(
-            s,
+            t,
             [
               {'role': 'user', 'content': ping}
             ],
             json: false);
-        lines.add('Mistral ✅');
+        lines.add('${t.label} ✅');
       } catch (e) {
-        lines.add('Mistral ❌ ${cut('$e')}');
+        lines.add('${t.label} ❌ ${cut('$e')}');
       }
-    } else {
-      lines.add('Mistral — بدون مفتاح');
     }
     return lines;
   }
-}
+}}
