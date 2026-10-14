@@ -498,4 +498,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except RuntimeError as exc:
-        pr
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1)
