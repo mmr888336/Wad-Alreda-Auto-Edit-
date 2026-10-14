@@ -34,12 +34,12 @@ class Analysis {
 }
 
 /// تحليل الفيديو بالذكاء الاصطناعي:
-/// 1) الصوت يتقسم لمقاطع (حوالي 45 ثانية) ويتحول لنص مقطع بمقطع. لو مزود وقف في النص، المقطع نفسه
+/// 1) الصوت يتقسم لمقاطع (حوالي دقيقتين) ويتحول لنص مقطع بمقطع. لو مزود وقف في النص، المقطع نفسه
 ///    يروح للمزود اللي بعده ونكمل بدون ما نعيد المقاطع اللي خلصت.
 /// 2) من النص الكامل نطلع العنوان والوصف والهاشتاقات وأفكار B-roll.
 class Analyzer {
-  static const double _chunkTarget = 45;
-  static const double _chunkMax = 90;
+  static const double _chunkTarget = 120;
+  static const double _chunkMax = 170;
 
   static double _num(dynamic v) =>
       v is num ? v.toDouble() : (double.tryParse('$v') ?? 0.0);
@@ -80,7 +80,7 @@ class Analyzer {
       if (len <= _chunkMax) {
         out.add(c);
       } else {
-        final n = (len / 60).ceil();
+        final n = (len / 120).ceil();
         final step = len / n;
         for (var i = 0; i < n; i++) {
           out.add([c[0] + step * i, i == n - 1 ? c[1] : c[0] + step * (i + 1)]);
@@ -133,9 +133,25 @@ class Analyzer {
 
   /// تفريغ مقطع صوتي واحد (توقيت نسبي لبداية المقطع).
   static Future<AiResult<List<Caption>>> _transcribeChunk(AppSettings s,
-      Uint8List bytes, List<GeminiTarget> targets, double dur) async {
+      Uint8List bytes, List<GeminiTarget> targets, List<KeyedModel> groqStt, double dur) async {
     final steps = <AiStep<List<Caption>>>[];
 
+    // 1) Groq Whisper أولاً (كل موديلات التفريغ المتاحة لحسابك، عبر كل المفاتيح)
+    for (final gt in groqStt) {
+      steps.add(AiStep(gt.label, () async {
+        final segs = await AiRouter.groqTranscribe(gt, bytes, language: s.lang);
+        final caps = <Caption>[];
+        for (final e in segs) {
+          final st = _num(e['start']);
+          var en = _num(e['end']);
+          if (en > dur) en = dur;
+          caps.addAll(_splitPhrase(st, en, '${e['text'] ?? ''}'));
+        }
+        return caps;
+      }));
+    }
+
+    // 2) Gemini احتياط (يسمع الصوت مباشرة)
     for (final t in targets) {
       steps.add(AiStep(t.label, () async {
         final text = await AiRouter.gemini(t, [
@@ -161,29 +177,13 @@ class Analyzer {
         return caps;
       }));
     }
-
-    if (s.groqKey.trim().isNotEmpty) {
-      for (final model in [AiRouter.groqWhisperTurbo, AiRouter.groqWhisperV3]) {
-        steps.add(AiStep('Groq $model', () async {
-          final segs = await AiRouter.groqTranscribe(s, model, bytes,
-              language: s.lang);
-          final caps = <Caption>[];
-          for (final e in segs) {
-            final st = _num(e['start']);
-            var en = _num(e['end']);
-            if (en > dur) en = dur;
-            caps.addAll(_splitPhrase(st, en, '${e['text'] ?? ''}'));
-          }
-          return caps;
-        }));
-      }
-    }
     return AiRouter.run<List<Caption>>(steps);
   }
 
   /// العنوان والوصف والهاشتاقات وأفكار B-roll من النص الكامل (بدون صوت، فأي موديل نصي ينفع).
   static Future<AiResult<Map<String, dynamic>>> _metadata(
-      AppSettings s, List<GeminiTarget> targets, String transcript, double dur) async {
+      AppSettings s, List<GeminiTarget> targets, List<KeyedModel> groqText,
+      List<KeyedModel> mistralT, String transcript, double dur) async {
     final prompt = '''
 أنت محرر فيديوهات قصيرة (ريلز / تيك توك). هذا نص كلام الفيديو مع وقت بداية كل عبارة بالثواني. مدة الفيديو ${dur.toStringAsFixed(1)} ثانية.
 أرجع JSON فقط، بدون أي شرح وبدون علامات markdown، بهذا الشكل بالضبط:
@@ -198,26 +198,29 @@ class Analyzer {
 $transcript
 ''';
     final steps = <AiStep<Map<String, dynamic>>>[];
+    for (final gt in groqText) {
+      steps.add(AiStep(gt.label, () async {
+        final t = await AiRouter.groq(
+            gt,
+            [
+              {'role': 'user', 'content': prompt}
+            ],
+            json: false);
+        return _json(t);
+      }));
+    }
+    for (final mt in mistralT) {
+      steps.add(AiStep(mt.label, () async {
+        final t = await AiRouter.mistral(mt, [
+          {'role': 'user', 'content': prompt}
+        ]);
+        return _json(t);
+      }));
+    }
     for (final tg in targets) {
       steps.add(AiStep(tg.label, () async {
         final t = await AiRouter.gemini(tg, [
           {'text': prompt}
-        ]);
-        return _json(t);
-      }));
-    }
-    if (s.groqKey.trim().isNotEmpty) {
-      steps.add(AiStep('Groq ${AiRouter.groqChatModel}', () async {
-        final t = await AiRouter.groq(s, AiRouter.groqChatModel, [
-          {'role': 'user', 'content': prompt}
-        ]);
-        return _json(t);
-      }));
-    }
-    if (s.mistralKey.trim().isNotEmpty) {
-      steps.add(AiStep('Mistral ${s.mistralModel.trim()}', () async {
-        final t = await AiRouter.mistral(s, [
-          {'role': 'user', 'content': prompt}
         ]);
         return _json(t);
       }));
@@ -238,6 +241,9 @@ $transcript
     AiRouter.resetCooldowns();
     final notes = <String>[];
     final targets = await AiRouter.geminiTargets(s);
+    final groqStt = await AiRouter.groqTargets(s, 'stt');
+    final groqText = await AiRouter.groqTargets(s, 'text');
+    final mistralT = AiRouter.mistralTargets(s);
 
     // ---- 1) تفريغ الصوت مقطع بمقطع ----
     final chunks = _chunks(durationSec, cutTimes);
@@ -256,7 +262,7 @@ $transcript
           temps.add(chunkPath);
           await _cutWav(wavPath, st, len, chunkPath);
           final bytes = await File(chunkPath).readAsBytes();
-          final res = await _transcribeChunk(s, bytes, targets, len);
+          final res = await _transcribeChunk(s, bytes, targets, groqStt, len);
           used[res.label] = (used[res.label] ?? 0) + 1;
           if (res.failures.isNotEmpty) {
             notes.add('المقطع ${i + 1}: تم التبديل إلى ${res.label} (${res.failures.last})');
@@ -306,7 +312,7 @@ $transcript
           .map((c) => '[${c.start.toStringAsFixed(1)}] ${c.text}')
           .join('\n');
       if (transcript.length > 7000) transcript = transcript.substring(0, 7000);
-      final res = await _metadata(s, targets, transcript, durationSec);
+      final res = await _metadata(s, targets, groqText, mistralT, transcript, durationSec);
       final m = res.value;
       title = '${m['title'] ?? ''}'.trim();
       description = '${m['description'] ?? ''}'.trim();
@@ -328,66 +334,77 @@ $transcript
     return Analysis(all, title, description, tags, broll, notes);
   }
 
-  /// فحص بصري: هل في الصورة امرأة أو فتاة؟ (يرمي خطأ لو ما قدر أي نظام يفحص)
-  static Future<bool> containsWoman(AppSettings s, String imagePath) async {
-    final bytes = await File(imagePath).readAsBytes();
-    final b64 = base64Encode(bytes);
-    const q =
-        'Does this image show a woman, a girl, or any female person (face or body)? Answer with exactly one word: YES or NO.';
-    final steps = <AiStep<bool>>[];
+  /// فحص بصري لعدة صور في طلب واحد: لكل صورة، هل فيها امرأة أو فتاة؟
+  /// يرجع قائمة بنفس الترتيب. يرمي خطأ لو ما قدر أي نظام يفحص.
+  static Future<List<bool>> containsWomanBatch(
+      AppSettings s, List<String> imagePaths) async {
+    final n = imagePaths.length;
+    if (n == 0) return [];
+    final b64s = <String>[];
+    for (final p in imagePaths) {
+      b64s.add(base64Encode(await File(p).readAsBytes()));
+    }
+    final q =
+        'You are given $n images in order. For each image decide whether it shows a woman, a girl, or any female person (face or body). Reply with JSON only, with exactly $n booleans in the same order, like {"women":[true,false]}';
+
+    List<bool> parse(String text) {
+      final m = _json(text);
+      final list = (m['women'] as List?) ?? [];
+      if (list.length != n) {
+        throw AiFailure('رد', null, 'عدد النتائج غير مطابق', false);
+      }
+      return list.map<bool>((e) => e == true || '$e'.toLowerCase() == 'true').toList();
+    }
+
+    final steps = <AiStep<List<bool>>>[];
     for (final tg in await AiRouter.geminiTargets(s)) {
       steps.add(AiStep(tg.label, () async {
-        final t = await AiRouter.gemini(
-            tg,
-            [
-              {
-                'inline_data': {'mime_type': 'image/jpeg', 'data': b64}
-              },
-              {'text': q},
-            ],
-            json: false,
-            timeoutSec: 40);
-        return t.toUpperCase().contains('YES');
-      }));
-    }
-    final msg = [
-      {
-        'role': 'user',
-        'content': [
-          {'type': 'text', 'text': q},
-          {
-            'type': 'image_url',
-            'image_url': 'data:image/jpeg;base64,$b64',
-          },
-        ],
-      }
-    ];
-    if (s.mistralKey.trim().isNotEmpty) {
-      steps.add(AiStep('Mistral ${s.mistralModel.trim()}', () async {
-        final t = await AiRouter.mistral(s, msg, json: false);
-        return t.toUpperCase().contains('YES');
-      }));
-    }
-    if (s.groqKey.trim().isNotEmpty) {
-      steps.add(AiStep('Groq ${AiRouter.groqVisionModel}', () async {
-        final msgGroq = [
-          {
-            'role': 'user',
-            'content': [
-              {'type': 'text', 'text': q},
-              {
-                'type': 'image_url',
-                'image_url': {'url': 'data:image/jpeg;base64,$b64'},
-              },
-            ],
-          }
+        final parts = <Map<String, dynamic>>[
+          for (final b in b64s)
+            {
+              'inline_data': {'mime_type': 'image/jpeg', 'data': b}
+            },
+          {'text': q},
         ];
-        final t = await AiRouter.groq(s, AiRouter.groqVisionModel, msgGroq,
-            json: false);
-        return t.toUpperCase().contains('YES');
+        return parse(await AiRouter.gemini(tg, parts, timeoutSec: 60));
       }));
     }
-    final res = await AiRouter.run<bool>(steps);
+    for (final gt in await AiRouter.groqTargets(s, 'vision')) {
+      steps.add(AiStep(gt.label, () async {
+        final content = <Map<String, dynamic>>[
+          {'type': 'text', 'text': q},
+          for (final b in b64s)
+            {
+              'type': 'image_url',
+              'image_url': {'url': 'data:image/jpeg;base64,$b'}
+            },
+        ];
+        final t = await AiRouter.groq(
+            gt,
+            [
+              {'role': 'user', 'content': content}
+            ],
+            json: false);
+        return parse(t);
+      }));
+    }
+    for (final mt in AiRouter.mistralTargets(s)) {
+      steps.add(AiStep(mt.label, () async {
+        final content = <Map<String, dynamic>>[
+          {'type': 'text', 'text': q},
+          for (final b in b64s)
+            {'type': 'image_url', 'image_url': 'data:image/jpeg;base64,$b'},
+        ];
+        final t = await AiRouter.mistral(
+            mt,
+            [
+              {'role': 'user', 'content': content}
+            ],
+            json: false);
+        return parse(t);
+      }));
+    }
+    final res = await AiRouter.run<List<bool>>(steps);
     return res.value;
   }
 }
