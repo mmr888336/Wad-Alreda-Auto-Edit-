@@ -19,6 +19,7 @@ dependencies:
   http: ^1.2.2
   unity_ads_plugin: ^0.4.0
   gal: ^2.3.1
+  google_fonts: ^6.2.1
 
 dev_dependencies:
   flutter_test:
