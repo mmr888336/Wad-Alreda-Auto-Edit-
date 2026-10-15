@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'analyzer.dart';
 import 'broll.dart';
 import 'settings.dart';
+import 'sound_effect_generator.dart';
 import 'silence_cutter.dart';
 import 'text_render.dart';
 
@@ -151,6 +152,8 @@ class Enhancer {
               width: outW,
               fontSize: outW * 0.062,
               fill: Colors.white,
+              fontFamily: s.captionFont,
+              style: s.captionStyle,
             );
             temps.add(path);
             caps.add(analysis.captions[i]);
@@ -166,6 +169,8 @@ class Enhancer {
             fontSize: outW * 0.085,
             fill: const Color(0xFFFFD400),
             box: true,
+            fontFamily: s.captionFont,
+            style: 'boxed',
           );
           temps.add(path);
           hookFile = path;
@@ -232,17 +237,24 @@ class Enhancer {
       }
     }
 
-    // 4) مؤثر صوتي (وش) يتولد بـ FFmpeg
+    // 4) Generate the selected non-musical effect locally using FFmpeg.
     String? whoosh;
-    if (s.sfx) {
-      final path = '$dir/whoosh_$stamp.wav';
-      final ok = await _run(
-          '-y -f lavfi -i "anoisesrc=d=0.6:c=pink:a=0.45" -af "highpass=f=250,lowpass=f=4000,afade=t=in:st=0:d=0.25,afade=t=out:st=0.25:d=0.35" "$path"');
-      if (ok && File(path).existsSync()) {
-        whoosh = path;
-        temps.add(path);
-      } else {
-        notes.add('تعذر توليد المؤثرات الصوتية.');
+    if (s.sfx && s.soundEffectStyle != 'none') {
+      final path = '$dir/sfx_$stamp.wav';
+      try {
+        final ok = await SoundEffectGenerator.render(
+          style: s.soundEffectStyle,
+          outputPath: path,
+          execute: _run,
+        );
+        if (ok && File(path).existsSync()) {
+          whoosh = path;
+          temps.add(path);
+        } else {
+          notes.add('تعذر توليد المؤثر الصوتي المختار؛ سيستمر التصدير بدونه.');
+        }
+      } catch (e) {
+        notes.add('تعذر توليد المؤثر الصوتي: $e');
       }
     }
 
@@ -310,10 +322,30 @@ class Enhancer {
       for (var i = 0; i < capFiles.length; i++) {
         final c = caps[i];
         final idx = inputs.length;
-        inputs.add('-i "${capFiles[i]}"');
+        final double duration = math.max(0.1, c.end - c.start).toDouble();
+        inputs.add(
+          '-loop 1 -framerate 30 -t ${_f(duration)} -i "${capFiles[i]}"',
+        );
+
+        final baseY = s.captionPosition == 'middle'
+            ? '(main_h-overlay_h)/2'
+            : 'main_h*0.80-overlay_h/2';
+        var captionY = baseY;
+        if (s.captionAnimation == 'slideUp') {
+          captionY =
+              "if(lt(t,${_f(c.start + 0.20)}),"
+              "($baseY)+overlay_h*(1-(t-${_f(c.start)})/0.20),"
+              "$baseY)";
+        } else if (s.captionAnimation == 'slideDown') {
+          captionY =
+              "if(lt(t,${_f(c.start + 0.20)}),"
+              "($baseY)-overlay_h*(1-(t-${_f(c.start)})/0.20),"
+              "$baseY)";
+        }
+
         final o = next();
         chains.add(
-            "[$cur][$idx:v]overlay=x=0:y=main_h*0.70-overlay_h/2:enable='between(t,${_f(c.start)},${_f(c.end)})'[$o]");
+            "[$cur][$idx:v]overlay=x=0:y='$captionY':enable='between(t,${_f(c.start)},${_f(c.end)})'[$o]");
         cur = o;
       }
 
@@ -414,6 +446,8 @@ class Enhancer {
           fontSize: outW * 0.105,
           fill: const Color(0xFFFFD400),
           box: true,
+          fontFamily: s.captionFont,
+          style: 'boxed',
         );
         temps.add(titlePath);
         coverOk = await _run(
