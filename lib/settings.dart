@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'ai_router.dart';
 import 'app_localizations.dart';
 import 'languages.dart';
+import 'editing_catalog.dart';
 
 class AppSettings {
   String provider;
@@ -40,6 +41,11 @@ class AppSettings {
   String brollProvider;
   String pexelsKey;
   String pixabayKey;
+  String captionStyle;
+  String captionFont;
+  String captionAnimation;
+  String captionPosition;
+  String soundEffectStyle;
 
   AppSettings({
     this.provider = 'gemini',
@@ -73,6 +79,11 @@ class AppSettings {
     this.brollProvider = 'pexels',
     this.pexelsKey = '',
     this.pixabayKey = '',
+    this.captionStyle = 'classic',
+    this.captionFont = 'Cairo',
+    this.captionAnimation = 'slideUp',
+    this.captionPosition = 'bottom',
+    this.soundEffectStyle = 'whoosh_soft',
   });
 
   String get activeKey => provider == 'gemini' ? geminiKey : mistralKey;
@@ -133,6 +144,12 @@ class AppSettings {
       brollProvider: prefs.getString('brollProvider') ?? 'pexels',
       pexelsKey: prefs.getString('pexelsKey') ?? '',
       pixabayKey: prefs.getString('pixabayKey') ?? '',
+      captionStyle: prefs.getString('captionStyle') ?? 'classic',
+      captionFont: prefs.getString('captionFont') ?? 'Cairo',
+      captionAnimation: prefs.getString('captionAnimation') ?? 'slideUp',
+      captionPosition: prefs.getString('captionPosition') ?? 'bottom',
+      soundEffectStyle:
+          prefs.getString('soundEffectStyle') ?? 'whoosh_soft',
     );
   }
 
@@ -170,6 +187,11 @@ class AppSettings {
     await prefs.setString('brollProvider', brollProvider);
     await prefs.setString('pexelsKey', pexelsKey.trim());
     await prefs.setString('pixabayKey', pixabayKey.trim());
+    await prefs.setString('captionStyle', captionStyle);
+    await prefs.setString('captionFont', captionFont);
+    await prefs.setString('captionAnimation', captionAnimation);
+    await prefs.setString('captionPosition', captionPosition);
+    await prefs.setString('soundEffectStyle', soundEffectStyle);
   }
 }
 class AiService {
@@ -645,6 +667,88 @@ class _SettingsPageState extends State<SettingsPage> {
               setState(() => current.captions = value);
             },
           ),
+          if (current.captions) ...[
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: current.captionStyle,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Caption style / شكل الكابشن',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                for (final entry in EditingCatalog.captionStyles.entries)
+                  DropdownMenuItem<String>(
+                    value: entry.key,
+                    child: Text(entry.value),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => current.captionStyle = value);
+              },
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              value: current.captionFont,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Caption font / خط الكابشن',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                for (final entry in EditingCatalog.captionFonts.entries)
+                  DropdownMenuItem<String>(
+                    value: entry.key,
+                    child: Text(entry.value),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => current.captionFont = value);
+              },
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              value: current.captionAnimation,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Caption animation / حركة الكابشن',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                for (final entry in EditingCatalog.captionAnimations.entries)
+                  DropdownMenuItem<String>(
+                    value: entry.key,
+                    child: Text(entry.value),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => current.captionAnimation = value);
+              },
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              value: current.captionPosition,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Caption position / مكان الكابشن',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                for (final entry in EditingCatalog.captionPositions.entries)
+                  DropdownMenuItem<String>(
+                    value: entry.key,
+                    child: Text(entry.value),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => current.captionPosition = value);
+              },
+            ),
+          ],
           SwitchListTile(
             title: Text(AppLocalizations.t('hook')),
             value: current.hook,
@@ -667,6 +771,28 @@ class _SettingsPageState extends State<SettingsPage> {
               setState(() => current.sfx = value);
             },
           ),
+          if (current.sfx) ...[
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: current.soundEffectStyle,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Sound effect / نوع المؤثر الصوتي',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                for (final entry in EditingCatalog.soundEffects.entries)
+                  DropdownMenuItem<String>(
+                    value: entry.key,
+                    child: Text(entry.value),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => current.soundEffectStyle = value);
+              },
+            ),
+          ],
           const SizedBox(height: 8),
           Text(AppLocalizations.t('brollSource')),
           RadioListTile<String>(
