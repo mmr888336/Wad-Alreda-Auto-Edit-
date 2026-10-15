@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:gal/gal.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -55,6 +56,11 @@ class _AutoEditAppState extends State<AutoEditApp> {
           title: 'Wad Alreda Studio',
           debugShowCheckedModeBanner: false,
           locale: Locale(language),
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
           supportedLocales: AppLocalizations.supportedLanguages
               .map((code) => Locale(code))
               .toList(),
@@ -294,6 +300,7 @@ class _HomePageState extends State<HomePage> {
       rethrow;
     }
   }
+
   Future<void> _run() async {
     final source = inputPath;
     if (source == null || busy) return;
