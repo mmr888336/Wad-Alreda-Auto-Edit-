@@ -9,6 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
   ffmpeg_kit_flutter_new_min_gpl: ^2.6.3
   file_picker: ^8.1.2
   shared_preferences: ^2.3.2
