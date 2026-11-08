@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'analyzer.dart';
 import 'broll.dart';
 import 'settings.dart';
+import 'editing_engine.dart';
 import 'sound_effect_generator.dart';
 import 'silence_cutter.dart';
 import 'text_render.dart';
@@ -41,7 +42,8 @@ class _Broll {
   _Broll(this.path, this.start, this.end);
 }
 
-/// بعد قص السكتات: كابشن + عنوان + B-roll + مؤثرات + تحسين صوت + غلاف + تصدير بالحجم المطلوب
+/// After silence cutting: captions, hook, B-roll, effects, audio cleanup,
+/// cover generation and final export.
 class Enhancer {
   static String _f(double v) => v.toStringAsFixed(2);
 
@@ -66,19 +68,26 @@ class Enhancer {
     }
   }
 
-  /// يفحص مقطع B-roll بصرياً: true = آمن (ما فيه امرأة)
+  /// Checks a B-roll frame visually: true means it passed the configured filter.
   static Future<bool> _clipIsSafe(
-      AppSettings s, String clip, String dir, int stamp, String tag, List<String> temps) async {
+    AppSettings s,
+    String clip,
+    String dir,
+    int stamp,
+    String tag,
+    List<String> temps,
+  ) async {
     try {
       final jpg = '$dir/chk_${stamp}_$tag.jpg';
       temps.add(jpg);
       final ok = await _run(
-          '-y -ss 1 -i "$clip" -frames:v 1 -vf scale=320:-2 -q:v 5 "$jpg"');
+        '-y -ss 1 -i "$clip" -frames:v 1 -vf scale=320:-2 -q:v 5 "$jpg"',
+      );
       if (!ok || !File(jpg).existsSync()) return false;
       final woman = await Analyzer.containsWoman(s, jpg);
       return !woman;
     } catch (_) {
-      return false; // ما قدرنا نتأكد، فنتجاهل المقطع احتياطاً
+      return false;
     }
   }
 
@@ -100,6 +109,7 @@ class Enhancer {
     final short = math.min(info.w, info.h);
     final targetShort = s.upscale2k ? 1440 : math.min(short, 1440);
     final factor = targetShort / short;
+
     int even(double value) {
       var result = value.round();
       if (result.isOdd) result++;
@@ -110,10 +120,12 @@ class Enhancer {
     final outH = even(info.h * factor);
     final portrait = outH >= outW;
 
-    // 1) تحليل الصوت بالذكاء الاصطناعي (Gemini يسمع الصوت)
+    // 1) Analyse the audio with the configured AI providers.
     Analysis? an;
     if (!s.hasAnyAiKey) {
-      notes.add('ما في مفتاح ذكاء اصطناعي؛ لم تتم إضافة الكابشن أو العنوان أو B-roll.');
+      notes.add(
+        'ما في مفتاح ذكاء اصطناعي؛ لم تتم إضافة الكابشن أو العنوان أو B-roll.',
+      );
     } else if (cutSec > 300) {
       notes.add('الفيديو أطول من 5 دقائق؛ تم تخطي التحليل بالذكاء الاصطناعي.');
     } else {
@@ -123,10 +135,16 @@ class Enhancer {
         final wav = '$dir/audio_$stamp.wav';
         temps.add(wav);
         final ok = await _run(
-            '-y -i "$cutPath" -vn -ac 1 -ar 16000 -c:a pcm_s16le "$wav"');
+          '-y -i "$cutPath" -vn -ac 1 -ar 16000 -c:a pcm_s16le "$wav"',
+        );
         if (!ok) throw Exception('تعذر استخراج الصوت من الفيديو.');
-        final res = await Analyzer.run(s, wav, cutSec,
-            cutTimes: cutTimes, onStatus: onStatus);
+        final res = await Analyzer.run(
+          s,
+          wav,
+          cutSec,
+          cutTimes: cutTimes,
+          onStatus: onStatus,
+        );
         an = res;
         notes.addAll(res.notes);
       } catch (e) {
@@ -136,7 +154,32 @@ class Enhancer {
     }
     final analysis = an;
 
-    // 2) صور الكابشن والعنوان
+    // 2) Select an editing profile using the analysis already produced.
+    // This is local and makes no additional AI/API request.
+    final profileText = [
+      analysis?.title ?? '',
+      analysis?.description ?? '',
+      if (analysis != null) ...analysis.captions.map((caption) => caption.text),
+      if (analysis != null) ...analysis.broll.map((idea) => idea.query),
+    ].join(' ').trim();
+    final editingProfile = EditingEngine.select(
+      content: profileText,
+      requestedStyle: s.visualStyle,
+    );
+    final captionStyle = editingProfile.isAutomatic
+        ? editingProfile.captionStyle
+        : s.captionStyle;
+    final punchZoom = editingProfile.isAutomatic
+        ? editingProfile.punchZoom
+        : s.punchZoom;
+    final flashTransitions = editingProfile.isAutomatic
+        ? editingProfile.flashTransitions
+        : s.flashTransitions;
+    if (editingProfile.isAutomatic && profileText.isNotEmpty) {
+      notes.add('المحرك التلقائي اختار أسلوب: ${editingProfile.label}.');
+    }
+
+    // 3) Render caption and hook images.
     final caps = <Caption>[];
     final capFiles = <String>[];
     String? hookFile;
@@ -153,13 +196,15 @@ class Enhancer {
               fontSize: outW * 0.062,
               fill: Colors.white,
               fontFamily: s.captionFont,
-              style: s.captionStyle,
+              style: captionStyle,
             );
             temps.add(path);
             caps.add(analysis.captions[i]);
             capFiles.add(path);
           }
-          if (caps.isEmpty) notes.add('لم يتم التعرف على كلام مناسب للكابشن.');
+          if (caps.isEmpty) {
+            notes.add('لم يتم التعرف على كلام مناسب للكابشن.');
+          }
         }
         if (s.hook && analysis.title.isNotEmpty) {
           final path = await TextRender.png(
@@ -180,39 +225,57 @@ class Enhancer {
       }
     }
 
-    // 3) B-roll مرتبط بمعنى الكلام، بدون نساء (فلتر وصف + فحص بصري بـ Gemini)
+    // 4) Fetch topic-related B-roll, subject to the existing safety check.
     final brolls = <_Broll>[];
     if (s.broll && analysis != null && analysis.broll.isNotEmpty) {
       final hasKey = s.brollProvider == 'pixabay'
           ? s.pixabayKey.trim().isNotEmpty
           : s.pexelsKey.trim().isNotEmpty;
       if (!hasKey) {
-        notes.add('لا يوجد مفتاح ${s.brollProvider} للـ B-roll. أضفه من الإعدادات.');
+        notes.add(
+          'لا يوجد مفتاح ${s.brollProvider} للـ B-roll. أضفه من الإعدادات.',
+        );
       } else {
         try {
           final ideas = analysis.broll
               .where((b) =>
-                  b.start >= 3.5 && b.end <= cutSec - 0.3 && b.end - b.start >= 1.5)
+                  b.start >= 3.5 &&
+                  b.end <= cutSec - 0.3 &&
+                  b.end - b.start >= 1.5)
               .toList()
             ..sort((a, b) => a.start.compareTo(b.start));
           var lastEnd = 0.0;
           var index = 0;
           for (final idea in ideas) {
-            if (brolls.length >= 4) break;
+            if (brolls.length >= editingProfile.maxBroll) break;
             if (idea.start < lastEnd + 1.0) continue;
             _checkCancel();
-            onStatus?.call('جاري تحميل وفحص B-roll (${brolls.length + 1})...');
+            onStatus?.call(
+              'جاري تحميل وفحص B-roll (${brolls.length + 1})...',
+            );
             String? got;
             for (var attempt = 0; attempt < 3 && got == null; attempt++) {
-              // المحاولة الأخيرة: رسوم متحركة 2D (Pixabay) لو المقاطع الواقعية فيها نساء
+              // Last attempt: 2D animation through Pixabay if enabled.
               final animation = attempt == 2;
               final out = '$dir/broll_${stamp}_${index}_$attempt.mp4';
               final file = await BrollFetcher.fetch(
-                  s, idea.query, portrait, out, index + attempt,
-                  animation: animation);
+                s,
+                idea.query,
+                portrait,
+                out,
+                index + attempt,
+                animation: animation,
+              );
               if (file == null) continue;
               temps.add(file);
-              final safe = await _clipIsSafe(s, file, dir, stamp, '${index}_$attempt', temps);
+              final safe = await _clipIsSafe(
+                s,
+                file,
+                dir,
+                stamp,
+                '${index}_$attempt',
+                temps,
+              );
               if (safe) {
                 got = file;
               } else {
@@ -236,8 +299,7 @@ class Enhancer {
         }
       }
     }
-
-    // 4) Generate the selected non-musical effect locally using FFmpeg.
+    // 5) Generate the selected non-musical effect locally using FFmpeg.
     String? whoosh;
     if (s.sfx && s.soundEffectStyle != 'none') {
       final path = '$dir/sfx_$stamp.wav';
@@ -251,14 +313,16 @@ class Enhancer {
           whoosh = path;
           temps.add(path);
         } else {
-          notes.add('تعذر توليد المؤثر الصوتي المختار؛ سيستمر التصدير بدونه.');
+          notes.add(
+            'تعذر توليد المؤثر الصوتي المختار؛ سيستمر التصدير بدونه.',
+          );
         }
       } catch (e) {
         notes.add('تعذر توليد المؤثر الصوتي: $e');
       }
     }
 
-    // 5) التركيب والتصدير
+    // 6) Compose and export.
     final totalKbps = s.targetMb * 279.6;
     final vK = (totalKbps - 128).clamp(800.0, 14000.0).round();
     final out = '$dir/final_$stamp.mp4';
@@ -266,7 +330,9 @@ class Enhancer {
 
     String buildCommand({required bool audioFx, required bool visFx}) {
       final inputs = <String>['-i "$cutPath"'];
-      final style = (visFx && s.visualEffects) ? _styleFilter(s.visualStyle) : '';
+      final style = (visFx && s.visualEffects)
+          ? _styleFilter(editingProfile.visualStyle)
+          : '';
       final chains = <String>[
         '[0:v]scale=$outW:$outH:flags=lanczos,setsar=1$style[base]'
       ];
@@ -276,21 +342,25 @@ class Enhancer {
       final sfxTimes = <double>[];
       final flashTimes = <double>[];
 
-      // تقريب سريع بالتناوب عند القطع (Punch-in)
-      if (visFx && s.visualEffects && s.punchZoom && cutTimes.length >= 3) {
+      // Punch-in crop around selected edit points.
+      if (visFx && s.visualEffects && punchZoom && cutTimes.length >= 3) {
         final wins = <String>[];
         for (var i = 1; i < cutTimes.length; i += 2) {
           final st = cutTimes[i];
           final en = (i + 1 < cutTimes.length) ? cutTimes[i + 1] : cutSec;
-          if (en - st > 0.3) wins.add('between(t,${_f(st)},${_f(en)})');
+          if (en - st > 0.3) {
+            wins.add('between(t,${_f(st)},${_f(en)})');
+          }
         }
         if (wins.isNotEmpty) {
           final o = next();
           chains.add('[$cur]split[za][zb]');
           chains.add(
-              '[zb]crop=w=iw/1.12:h=ih/1.12:x=(iw-ow)/2:y=(ih-oh)/2,scale=$outW:$outH:flags=bicubic[zc]');
+            '[zb]crop=w=iw/1.12:h=ih/1.12:x=(iw-ow)/2:y=(ih-oh)/2,scale=$outW:$outH:flags=bicubic[zc]',
+          );
           chains.add(
-              "[za][zc]overlay=x=0:y=0:enable='${wins.take(60).join('+')}'[$o]");
+            "[za][zc]overlay=x=0:y=0:enable='${wins.take(60).join('+')}'[$o]",
+          );
           cur = o;
         }
       }
@@ -299,23 +369,26 @@ class Enhancer {
         final idx = inputs.length;
         inputs.add('-i "${b.path}"');
         chains.add(
-            '[$idx:v]scale=$outW:$outH:force_original_aspect_ratio=increase,crop=$outW:$outH,setsar=1,setpts=PTS-STARTPTS+${_f(b.start)}/TB[bv$idx]');
+          '[$idx:v]scale=$outW:$outH:force_original_aspect_ratio=increase,crop=$outW:$outH,setsar=1,setpts=PTS-STARTPTS+${_f(b.start)}/TB[bv$idx]',
+        );
         final o = next();
         chains.add(
-            "[$cur][bv$idx]overlay=x=0:y=0:enable='between(t,${_f(b.start)},${_f(b.end)})'[$o]");
+          "[$cur][bv$idx]overlay=x=0:y=0:enable='between(t,${_f(b.start)},${_f(b.end)})'[$o]",
+        );
         cur = o;
         sfxTimes.add(b.start);
         flashTimes.add(b.start);
       }
 
-      // وميض انتقالي قصير عند بداية كل B-roll
-      if (visFx && s.visualEffects && s.flashTransitions && flashTimes.isNotEmpty) {
+      // Brief flash transitions at B-roll boundaries.
+      if (visFx && s.visualEffects && flashTransitions && flashTimes.isNotEmpty) {
         final en = flashTimes
             .map((t) => 'between(t,${_f(t)},${_f(t + 0.07)})')
             .join('+');
         final o = next();
         chains.add(
-            "[$cur]drawbox=x=0:y=0:w=iw:h=ih:color=white@0.5:t=fill:enable='$en'[$o]");
+          "[$cur]drawbox=x=0:y=0:w=iw:h=ih:color=white@0.5:t=fill:enable='$en'[$o]",
+        );
         cur = o;
       }
 
@@ -345,7 +418,8 @@ class Enhancer {
 
         final o = next();
         chains.add(
-            "[$cur][$idx:v]overlay=x=0:y='$captionY':enable='between(t,${_f(c.start)},${_f(c.end)})'[$o]");
+          "[$cur][$idx:v]overlay=x=0:y='$captionY':enable='between(t,${_f(c.start)},${_f(c.end)})'[$o]",
+        );
         cur = o;
       }
 
@@ -354,27 +428,31 @@ class Enhancer {
         inputs.add('-i "$hook"');
         final o = next();
         chains.add(
-            "[$cur][$idx:v]overlay=x=0:y=main_h*0.10:enable='between(t,0.1,3.1)'[$o]");
+          "[$cur][$idx:v]overlay=x=0:y=main_h*0.10:enable='between(t,0.1,3.1)'[$o]",
+        );
         cur = o;
         sfxTimes.insert(0, 0.1);
       }
 
-      // شريط تقدم أسفل الفيديو
+      // Progress bar.
       if (visFx && s.visualEffects && s.progressBar) {
         final idx = inputs.length;
         inputs.add(
-            '-f lavfi -i "color=c=0xFFD400:s=${outW}x14:r=30:d=${_f(cutSec + 1)}"');
+          '-f lavfi -i "color=c=0xFFD400:s=${outW}x14:r=30:d=${_f(cutSec + 1)}"',
+        );
         final o = next();
         chains.add(
-            '[$cur][$idx:v]overlay=x=-overlay_w+main_w*t/${_f(cutSec)}:y=main_h-14[$o]');
+          '[$cur][$idx:v]overlay=x=-overlay_w+main_w*t/${_f(cutSec)}:y=main_h-14[$o]',
+        );
         cur = o;
       }
 
-      // الصوت: تحسين + مؤثرات
+      // Audio cleanup and non-musical sound effects.
       var aLabel = '0:a';
       if (audioFx && s.enhanceAudio) {
         chains.add(
-            '[0:a]highpass=f=80,afftdn=nf=-25,acompressor=threshold=0.1:ratio=3:attack=20:release=250,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[clean]');
+          '[0:a]highpass=f=80,afftdn=nf=-25,acompressor=threshold=0.1:ratio=3:attack=20:release=250,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[clean]',
+        );
         aLabel = 'clean';
       }
       var audioMap = aLabel == '0:a' ? '0:a' : '"[clean]"';
@@ -390,37 +468,63 @@ class Enhancer {
         }
         final count = times.length + 1;
         chains.add(
-            '[$aLabel]${mix.toString()}amix=inputs=$count:duration=first:dropout_transition=0,volume=$count,alimiter=limit=0.95[aout]');
+          '[$aLabel]${mix.toString()}amix=inputs=$count:duration=first:dropout_transition=0,volume=$count,alimiter=limit=0.95[aout]',
+        );
         audioMap = '"[aout]"';
       }
 
+      final videoEncoder = s.maximumQuality
+          ? '-c:v libx264 -preset slow -crf 17'
+          : '-c:v libx264 -preset veryfast -crf 21 -maxrate ${vK}k -bufsize ${vK * 2}k';
+      final audioEncoder = s.maximumQuality
+          ? '-c:a aac -b:a 192k -ar 48000'
+          : '-c:a aac -b:a 128k -ar 48000';
       final tail =
-          '-c:v libx264 -preset veryfast -crf 21 -maxrate ${vK}k -bufsize ${vK * 2}k -pix_fmt yuv420p -c:a aac -b:a 128k -ar 48000 -movflags +faststart -t ${_f(cutSec + 0.2)} "$out"';
+          '$videoEncoder -pix_fmt yuv420p $audioEncoder -movflags +faststart -t ${_f(cutSec + 0.2)} "$out"';
       return '-y ${inputs.join(' ')} -filter_complex "${chains.join(';')}" -map "[$cur]" -map $audioMap $tail';
     }
 
-    onStatus?.call('جاري التصدير ${outW}×$outH مع التحسينات...');
+    onStatus?.call(
+      s.maximumQuality
+          ? 'جاري التصدير بأعلى جودة ${outW}×${outH} — قد يستغرق وقتاً أطول...'
+          : 'جاري التصدير ${outW}×${outH} مع التحسينات...',
+    );
     var ok = await SilenceCutter.encode(
-        buildCommand(audioFx: true, visFx: true), cutSec, onProgress);
+      buildCommand(audioFx: true, visFx: true),
+      cutSec,
+      onProgress,
+    );
 
     if (!ok) {
       _checkCancel();
-      notes.add('بعض الفلاتر المتقدمة ما اشتغلت؛ صدّرت بدونها مع الكابشن والـ B-roll.');
+      notes.add(
+        'بعض الفلاتر المتقدمة ما اشتغلت؛ صدّرت بدونها مع الكابشن والـ B-roll.',
+      );
       onStatus?.call('جاري التصدير بدون الفلاتر المتقدمة...');
       ok = await SilenceCutter.encode(
-          buildCommand(audioFx: false, visFx: false), cutSec, onProgress);
+        buildCommand(audioFx: false, visFx: false),
+        cutSec,
+        onProgress,
+      );
     }
     if (!ok) {
       _checkCancel();
       notes.add('فشل التركيب؛ صدّرت نسخة بسيطة.');
       onStatus?.call('جاري التصدير البسيط...');
+      final fallbackVideoEncoder = s.maximumQuality
+          ? '-c:v libx264 -preset slow -crf 18'
+          : '-c:v libx264 -preset veryfast -crf 21 -maxrate ${vK}k -bufsize ${vK * 2}k';
+      final fallbackAudioEncoder = s.maximumQuality
+          ? '-c:a aac -b:a 192k'
+          : '-c:a aac -b:a 128k';
       final simple =
-          '-y -i "$cutPath" -vf "scale=$outW:$outH:flags=lanczos" -c:v libx264 -preset veryfast -crf 21 -maxrate ${vK}k -bufsize ${vK * 2}k -pix_fmt yuv420p -c:a aac -b:a 128k -movflags +faststart "$out"';
+          '-y -i "$cutPath" -vf "scale=$outW:$outH:flags=lanczos" $fallbackVideoEncoder -pix_fmt yuv420p $fallbackAudioEncoder -movflags +faststart "$out"';
       ok = await SilenceCutter.encode(simple, cutSec, onProgress);
       if (!ok) {
         _checkCancel();
-        final simple2 =
-            '-y -i "$cutPath" -vf "scale=$outW:$outH" -c:v mpeg4 -b:v ${vK}k -c:a aac -b:a 128k "$out"';
+        final simple2 = s.maximumQuality
+            ? '-y -i "$cutPath" -vf "scale=$outW:$outH" -c:v mpeg4 -q:v 2 -c:a aac -b:a 192k "$out"'
+            : '-y -i "$cutPath" -vf "scale=$outW:$outH" -c:v mpeg4 -b:v ${vK}k -c:a aac -b:a 128k "$out"';
         ok = await SilenceCutter.encode(simple2, cutSec, onProgress);
       }
     }
@@ -431,7 +535,7 @@ class Enhancer {
       notes.add('فشل التصدير المحسّن؛ هذه نسخة القص فقط.');
     }
 
-    // 6) الغلاف: لقطة من الفيديو (قبل الإضافات) + العنوان
+    // 7) Create a cover image from the edited source frame and AI title.
     String? coverPath;
     try {
       onStatus?.call('جاري تجهيز الغلاف...');
@@ -451,10 +555,12 @@ class Enhancer {
         );
         temps.add(titlePath);
         coverOk = await _run(
-            '-y -ss ${_f(at)} -i "$cutPath" -i "$titlePath" -filter_complex "[0:v]scale=$outW:$outH:flags=lanczos,setsar=1[b];[b][1:v]overlay=x=0:y=(main_h-overlay_h)/2[o]" -map "[o]" -frames:v 1 -q:v 2 "$cover"');
+          '-y -ss ${_f(at)} -i "$cutPath" -i "$titlePath" -filter_complex "[0:v]scale=$outW:$outH:flags=lanczos,setsar=1[b];[b][1:v]overlay=x=0:y=(main_h-overlay_h)/2[o]" -map "[o]" -frames:v 1 -q:v 2 "$cover"',
+        );
       } else {
         coverOk = await _run(
-            '-y -ss ${_f(at)} -i "$cutPath" -vf "scale=$outW:$outH:flags=lanczos" -frames:v 1 -q:v 2 "$cover"');
+          '-y -ss ${_f(at)} -i "$cutPath" -vf "scale=$outW:$outH:flags=lanczos" -frames:v 1 -q:v 2 "$cover"',
+        );
       }
       if (coverOk && File(cover).existsSync()) coverPath = cover;
     } catch (e) {
