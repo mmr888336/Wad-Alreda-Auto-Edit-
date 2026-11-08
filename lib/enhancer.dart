@@ -299,7 +299,7 @@ class Enhancer {
         }
       }
     }
-    // 5) Generate the selected non-musical effect locally using FFmpeg.
+        // 5) Generate the selected non-musical effect locally using FFmpeg.
     String? whoosh;
     if (s.sfx && s.soundEffectStyle != 'none') {
       final path = '$dir/sfx_$stamp.wav';
