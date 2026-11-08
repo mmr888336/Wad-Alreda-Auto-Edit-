@@ -37,6 +37,7 @@ class AppSettings {
   bool flashTransitions;
   bool progressBar;
   bool upscale2k;
+  bool maximumQuality;
   double targetMb;
   String brollProvider;
   String pexelsKey;
@@ -70,11 +71,12 @@ class AppSettings {
     this.sfx = true,
     this.enhanceAudio = true,
     this.visualEffects = true,
-    this.visualStyle = 'cinematic',
+    this.visualStyle = 'auto',
     this.punchZoom = true,
     this.flashTransitions = true,
     this.progressBar = true,
     this.upscale2k = true,
+    this.maximumQuality = true,
     this.targetMb = 12,
     this.brollProvider = 'pexels',
     this.pexelsKey = '',
@@ -135,11 +137,12 @@ class AppSettings {
       sfx: prefs.getBool('sfx') ?? true,
       enhanceAudio: prefs.getBool('enhanceAudio') ?? true,
       visualEffects: prefs.getBool('visualEffects') ?? true,
-      visualStyle: prefs.getString('visualStyle') ?? 'cinematic',
+      visualStyle: prefs.getString('visualStyle') ?? 'auto',
       punchZoom: prefs.getBool('punchZoom') ?? true,
       flashTransitions: prefs.getBool('flashTransitions') ?? true,
       progressBar: prefs.getBool('progressBar') ?? true,
       upscale2k: prefs.getBool('upscale2k') ?? true,
+      maximumQuality: prefs.getBool('maximumQuality') ?? true,
       targetMb: prefs.getDouble('targetMb') ?? 12,
       brollProvider: prefs.getString('brollProvider') ?? 'pexels',
       pexelsKey: prefs.getString('pexelsKey') ?? '',
@@ -183,6 +186,7 @@ class AppSettings {
     await prefs.setBool('flashTransitions', flashTransitions);
     await prefs.setBool('progressBar', progressBar);
     await prefs.setBool('upscale2k', upscale2k);
+    await prefs.setBool('maximumQuality', maximumQuality);
     await prefs.setDouble('targetMb', targetMb);
     await prefs.setString('brollProvider', brollProvider);
     await prefs.setString('pexelsKey', pexelsKey.trim());
@@ -194,6 +198,7 @@ class AppSettings {
     await prefs.setString('soundEffectStyle', soundEffectStyle);
   }
 }
+
 class AiService {
   static String _cut(String value) =>
       value.length > 300 ? value.substring(0, 300) : value;
@@ -407,7 +412,7 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => testResult = 'Failed ❌ $e');
+        setState(() => testResult = 'Failed ❌ ${e}');
       }
     } finally {
       if (mounted) {
@@ -433,7 +438,7 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
     );
   }
-  @override
+    @override
   Widget build(BuildContext context) {
     final current = settings;
 
@@ -607,6 +612,18 @@ class _SettingsPageState extends State<SettingsPage> {
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(AppLocalizations.t('colorStyle')),
+            ),
+            RadioListTile<String>(
+              title: const Text('Auto — تلقائي حسب موضوع الفيديو'),
+              subtitle: const Text(
+                'يختار المحرك الألوان والإيقاع والمؤثرات المناسبة لمحتوى الفيديو.',
+              ),
+              value: 'auto',
+              groupValue: current.visualStyle,
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => current.visualStyle = value);
+              },
             ),
             RadioListTile<String>(
               title: Text(AppLocalizations.t('clean')),
@@ -839,21 +856,33 @@ class _SettingsPageState extends State<SettingsPage> {
               setState(() => current.upscale2k = value);
             },
           ),
-          Text(
-            AppLocalizations.t(
-              'targetSize',
-              args: {'size': current.targetMb.toStringAsFixed(0)},
+          SwitchListTile(
+            title: const Text('Maximum export quality'),
+            subtitle: const Text(
+              'H.264 CRF 17 + slow preset + 192 kb/s audio. Larger files and longer export time.',
             ),
-          ),
-          Slider(
-            min: 6,
-            max: 20,
-            divisions: 14,
-            value: current.targetMb,
+            value: current.maximumQuality,
             onChanged: (value) {
-              setState(() => current.targetMb = value);
+              setState(() => current.maximumQuality = value);
             },
           ),
+          if (!current.maximumQuality) ...[
+            Text(
+              AppLocalizations.t(
+                'targetSize',
+                args: {'size': current.targetMb.toStringAsFixed(0)},
+              ),
+            ),
+            Slider(
+              min: 6,
+              max: 20,
+              divisions: 14,
+              value: current.targetMb,
+              onChanged: (value) {
+                setState(() => current.targetMb = value);
+              },
+            ),
+          ],
           const Divider(height: 32),
           Text(
             AppLocalizations.t(
