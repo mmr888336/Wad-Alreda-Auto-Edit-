@@ -146,4 +146,3 @@ jobs:
           path: app/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: warn
           retention-days: 14
-          
