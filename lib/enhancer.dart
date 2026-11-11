@@ -7,6 +7,8 @@ import 'analyzer.dart';
 import 'broll.dart';
 import 'settings.dart';
 import 'editing_engine.dart';
+import 'motion_graphics.dart';
+import 'timeline_engine.dart';
 import 'sound_effect_generator.dart';
 import 'silence_cutter.dart';
 import 'text_render.dart';
@@ -22,6 +24,10 @@ class EnhanceResult {
   final int outW;
   final int outH;
 
+  /// The exact layer manifest used by the renderer for this export.
+  /// It is passed to the next Studio/timeline stage as structured data.
+  final TimelineProject timelineProject;
+
   EnhanceResult({
     required this.videoPath,
     required this.coverPath,
@@ -32,6 +38,7 @@ class EnhanceResult {
     required this.sizeMb,
     required this.outW,
     required this.outH,
+    required this.timelineProject,
   });
 }
 
@@ -66,6 +73,264 @@ class Enhancer {
       default:
         return ',colorbalance=rs=-0.04:bs=0.05:rh=0.05:bh=-0.04,eq=contrast=1.10:saturation=1.05:brightness=-0.01,unsharp=5:5:0.35:3:3:0.0,vignette=angle=PI/5';
     }
+  }
+
+  /// Turns the actual assets produced by this editing job into a structured
+  /// multi-track project. The renderer and the future Studio UI share this
+  /// exact project object rather than rebuilding a decorative timeline.
+  static TimelineProject _createTimelineProject({
+    required String projectId,
+    required String sourcePath,
+    required double duration,
+    required int width,
+    required int height,
+    required List<_Broll> brolls,
+    required List<Caption> captions,
+    required List<String> captionFiles,
+    required String? hookPath,
+    required String hookText,
+    required String? effectPath,
+    required String effectStyle,
+    required MotionGraphicsPlan motionPlan,
+    required AppSettings settings,
+  }) {
+    const videoTrackId = 'track_video';
+    const brollTrackId = 'track_broll';
+    const captionTrackId = 'track_captions';
+    const graphicsTrackId = 'track_graphics';
+    const audioTrackId = 'track_audio';
+    const effectsTrackId = 'track_effects';
+
+    final videoLayers = <TimelineLayer>[
+      TimelineLayer(
+        id: 'source_video',
+        trackId: videoTrackId,
+        type: TimelineLayerType.sourceVideo,
+        name: 'الفيديو الأصلي',
+        start: 0,
+        end: duration,
+        zIndex: 0,
+        sourcePath: sourcePath,
+      ),
+    ];
+
+    final brollLayers = <TimelineLayer>[];
+    for (var i = 0; i < brolls.length; i++) {
+      final item = brolls[i];
+      final start = item.start.clamp(0.0, duration).toDouble();
+      final end = item.end.clamp(0.0, duration).toDouble();
+      if (end <= start + 0.001) continue;
+
+      brollLayers.add(
+        TimelineLayer(
+          id: 'broll_$i',
+          trackId: brollTrackId,
+          type: TimelineLayerType.broll,
+          name: 'لقطة إضافية ${brollLayers.length + 1}',
+          start: start,
+          end: end,
+          zIndex: 10,
+          sourcePath: item.path,
+        ),
+      );
+    }
+
+    final captionLayers = <TimelineLayer>[];
+    final captionCount = math.min(captions.length, captionFiles.length);
+    final baseY = settings.captionPosition == 'middle' ? 0.5 : 0.80;
+    final travel = 0.04 * (motionPlan.captionTravel / 0.48);
+    final dynamicMotion = motionPlan.mood == MotionMood.dynamic;
+
+    for (var i = 0; i < captionCount; i++) {
+      final caption = captions[i];
+      final start = caption.start.clamp(0.0, duration).toDouble();
+      final end = caption.end.clamp(0.0, duration).toDouble();
+      if (end <= start + 0.001) continue;
+
+      var initialY = baseY;
+      if (settings.captionAnimation == 'slideUp') {
+        initialY = baseY + travel;
+      } else if (settings.captionAnimation == 'slideDown') {
+        initialY = baseY - travel;
+      }
+
+      final enterEnd = math.min(
+        end,
+        start + motionPlan.captionEnterSeconds,
+      ).toDouble();
+      final hasEntrance = enterEnd > start + 0.001;
+
+      captionLayers.add(
+        TimelineLayer(
+          id: 'caption_$i',
+          trackId: captionTrackId,
+          type: TimelineLayerType.caption,
+          name: 'كابشن ${captionLayers.length + 1}',
+          start: start,
+          end: end,
+          zIndex: 20,
+          sourcePath: captionFiles[i],
+          text: caption.text,
+          keyframes: [
+            TransformKeyframe(
+              time: start,
+              transform: LayerTransform(
+                x: hasEntrance && dynamicMotion ? 0.98 : 0.5,
+                y: hasEntrance ? initialY : baseY,
+                opacity: hasEntrance ? 0 : 1,
+              ),
+              easing: KeyframeEasing.easeOut,
+            ),
+            if (hasEntrance)
+              TransformKeyframe(
+                time: enterEnd,
+                transform: LayerTransform(x: 0.5, y: baseY, opacity: 1),
+              ),
+          ],
+        ),
+      );
+    }
+
+    final titleLayers = <TimelineLayer>[];
+    if (hookPath != null && hookText.trim().isNotEmpty && duration > 0.05) {
+      final start = math.min(0.1, duration * 0.1).toDouble();
+      final end = math.min(
+        duration,
+        start + motionPlan.hookDurationSeconds,
+      ).toDouble();
+      if (end > start + 0.001) {
+        final enterEnd = math.min(
+          end,
+          start + motionPlan.hookEnterSeconds,
+        ).toDouble();
+        final hasEntrance = enterEnd > start + 0.001;
+        final initialY = motionPlan.mood == MotionMood.dynamic ? 0.10 : 0.02;
+
+        titleLayers.add(
+          TimelineLayer(
+            id: 'title_main',
+            trackId: graphicsTrackId,
+            type: TimelineLayerType.title,
+            name: 'عنوان البداية',
+            start: start,
+            end: end,
+            zIndex: 30,
+            sourcePath: hookPath,
+            text: hookText,
+            keyframes: [
+              TransformKeyframe(
+                time: start,
+                transform: LayerTransform(
+                  x: hasEntrance && dynamicMotion ? 0.98 : 0.5,
+                  y: hasEntrance ? initialY : 0.10,
+                  opacity: hasEntrance ? 0 : 1,
+                ),
+                easing: KeyframeEasing.easeOut,
+              ),
+              if (hasEntrance)
+                TransformKeyframe(
+                  time: enterEnd,
+                  transform: const LayerTransform(x: 0.5, y: 0.10),
+                ),
+            ],
+          ),
+        );
+      }
+    }
+
+    final audioLayers = <TimelineLayer>[
+      TimelineLayer(
+        id: 'source_audio',
+        trackId: audioTrackId,
+        type: TimelineLayerType.sourceAudio,
+        name: 'الصوت الأصلي',
+        start: 0,
+        end: duration,
+        zIndex: 0,
+        sourcePath: sourcePath,
+      ),
+    ];
+
+    final effectLayers = <TimelineLayer>[];
+    if (effectPath != null && effectStyle != 'none') {
+      final effectDuration = SoundEffectGenerator.durationFor(effectStyle);
+      final triggerTimes = <double>[
+        ...brollLayers.map((layer) => layer.start),
+        ...titleLayers.map((layer) => layer.start),
+      ].toSet().toList()
+        ..sort();
+
+      for (var i = 0; i < triggerTimes.length && i < 6; i++) {
+        final start = triggerTimes[i];
+        final end = math.min(duration, start + effectDuration).toDouble();
+        if (end <= start + 0.001) continue;
+
+        effectLayers.add(
+          TimelineLayer(
+            id: 'sound_effect_$i',
+            trackId: effectsTrackId,
+            type: TimelineLayerType.soundEffect,
+            name: 'مؤثر صوتي ${i + 1}',
+            start: start,
+            end: end,
+            zIndex: 40,
+            sourcePath: effectPath,
+          ),
+        );
+      }
+    }
+
+    return TimelineProject(
+      id: projectId,
+      duration: duration,
+      width: width,
+      height: height,
+      frameRate: 30,
+      tracks: [
+        TimelineTrack(
+          id: videoTrackId,
+          name: 'الفيديو',
+          type: TimelineTrackType.video,
+          order: 0,
+          layers: videoLayers,
+        ),
+        TimelineTrack(
+          id: brollTrackId,
+          name: 'B-roll',
+          type: TimelineTrackType.broll,
+          order: 1,
+          layers: brollLayers,
+        ),
+        TimelineTrack(
+          id: captionTrackId,
+          name: 'الكابشن',
+          type: TimelineTrackType.captions,
+          order: 2,
+          layers: captionLayers,
+        ),
+        TimelineTrack(
+          id: graphicsTrackId,
+          name: 'العناوين والجرافيك',
+          type: TimelineTrackType.graphics,
+          order: 3,
+          layers: titleLayers,
+        ),
+        TimelineTrack(
+          id: audioTrackId,
+          name: 'الصوت',
+          type: TimelineTrackType.audio,
+          order: 4,
+          layers: audioLayers,
+        ),
+        TimelineTrack(
+          id: effectsTrackId,
+          name: 'المؤثرات',
+          type: TimelineTrackType.effects,
+          order: 5,
+          layers: effectLayers,
+        ),
+      ],
+    );
   }
 
   /// Checks a B-roll frame visually: true means it passed the configured filter.
@@ -154,7 +419,7 @@ class Enhancer {
     }
     final analysis = an;
 
-    // 2) Select an editing profile using the analysis already produced.
+    // 2) Select a topic-aware editing profile and motion plan.
     // This is local and makes no additional AI/API request.
     final profileText = [
       analysis?.title ?? '',
@@ -166,6 +431,7 @@ class Enhancer {
       content: profileText,
       requestedStyle: s.visualStyle,
     );
+    final motionPlan = MotionGraphicsPlan.forProfile(editingProfile);
     final captionStyle = editingProfile.isAutomatic
         ? editingProfile.captionStyle
         : s.captionStyle;
@@ -224,7 +490,6 @@ class Enhancer {
         notes.add('تعذر رسم النصوص: $e');
       }
     }
-
     // 4) Fetch topic-related B-roll, subject to the existing safety check.
     final brolls = <_Broll>[];
     if (s.broll && analysis != null && analysis.broll.isNotEmpty) {
@@ -299,7 +564,8 @@ class Enhancer {
         }
       }
     }
-        // 5) Generate the selected non-musical effect locally using FFmpeg.
+
+    // 5) Generate the selected non-musical effect locally using FFmpeg.
     String? whoosh;
     if (s.sfx && s.soundEffectStyle != 'none') {
       final path = '$dir/sfx_$stamp.wav';
@@ -322,11 +588,35 @@ class Enhancer {
       }
     }
 
-    // 6) Compose and export.
+    // 6) Build the real timeline project before rendering. The same layer
+    // data drives FFmpeg now and will drive the interactive Studio later.
+    onStatus?.call('جاري بناء طبقات المونتاج والحركات...');
+    final timelineProject = _createTimelineProject(
+      projectId: 'job_$stamp',
+      sourcePath: cutPath,
+      duration: cutSec,
+      width: outW,
+      height: outH,
+      brolls: brolls,
+      captions: caps,
+      captionFiles: capFiles,
+      hookPath: hookFile,
+      hookText: analysis?.title ?? '',
+      effectPath: whoosh,
+      effectStyle: s.soundEffectStyle,
+      motionPlan: motionPlan,
+      settings: s,
+    );
+    final timelineErrors = timelineProject.validate();
+    if (timelineErrors.isNotEmpty) {
+      notes.add(
+        'تم رصد مشكلة في بيانات بعض الطبقات: ${timelineErrors.first}',
+      );
+    }
+
     final totalKbps = s.targetMb * 279.6;
     final vK = (totalKbps - 128).clamp(800.0, 14000.0).round();
     final out = '$dir/final_$stamp.mp4';
-    final hook = hookFile;
 
     String buildCommand({required bool audioFx, required bool visFx}) {
       final inputs = <String>['-i "$cutPath"'];
@@ -339,8 +629,12 @@ class Enhancer {
       var cur = 'base';
       var n = 0;
       String next() => 'v${n++}';
-      final sfxTimes = <double>[];
       final flashTimes = <double>[];
+      final sfxTimes = timelineProject
+          .layersOfType(TimelineLayerType.soundEffect)
+          .where((layer) => layer.visible)
+          .map((layer) => layer.start)
+          .toList();
 
       // Punch-in crop around selected edit points.
       if (visFx && s.visualEffects && punchZoom && cutTimes.length >= 3) {
@@ -365,19 +659,23 @@ class Enhancer {
         }
       }
 
-      for (final b in brolls) {
+      // B-roll sources are read from the project layers, not from a second
+      // independently maintained list.
+      final brollLayers = timelineProject
+          .layersOfType(TimelineLayerType.broll)
+          .where((layer) => layer.visible && layer.sourcePath != null);
+      for (final layer in brollLayers) {
         final idx = inputs.length;
-        inputs.add('-i "${b.path}"');
+        inputs.add('-i "${layer.sourcePath}"');
         chains.add(
-          '[$idx:v]scale=$outW:$outH:force_original_aspect_ratio=increase,crop=$outW:$outH,setsar=1,setpts=PTS-STARTPTS+${_f(b.start)}/TB[bv$idx]',
+          '[$idx:v]${motionPlan.brollInputFilter(width: outW, height: outH, start: layer.start, end: layer.end)}[bv$idx]',
         );
         final o = next();
         chains.add(
-          "[$cur][bv$idx]overlay=x=0:y=0:enable='between(t,${_f(b.start)},${_f(b.end)})'[$o]",
+          "[$cur][bv$idx]overlay=x=0:y=0:enable='between(t,${_f(layer.start)},${_f(layer.end)})'[$o]",
         );
         cur = o;
-        sfxTimes.add(b.start);
-        flashTimes.add(b.start);
+        flashTimes.add(layer.start);
       }
 
       // Brief flash transitions at B-roll boundaries.
@@ -392,46 +690,81 @@ class Enhancer {
         cur = o;
       }
 
-      for (var i = 0; i < capFiles.length; i++) {
-        final c = caps[i];
+      // Keyframed captions: FFmpeg evaluates the layer's normalized X/Y
+      // transform against the main frame at each output frame.
+      final captionLayers = timelineProject
+          .layersOfType(TimelineLayerType.caption)
+          .where((layer) => layer.visible && layer.sourcePath != null);
+      var captionIndex = 0;
+      for (final layer in captionLayers) {
         final idx = inputs.length;
-        final double duration = math.max(0.1, c.end - c.start).toDouble();
+        final duration = math.max(0.1, layer.duration).toDouble();
         inputs.add(
-          '-loop 1 -framerate 30 -t ${_f(duration)} -i "${capFiles[i]}"',
+          '-loop 1 -framerate 30 -t ${_f(duration)} -i "${layer.sourcePath}"',
         );
 
-        final baseY = s.captionPosition == 'middle'
-            ? '(main_h-overlay_h)/2'
-            : 'main_h*0.80-overlay_h/2';
-        var captionY = baseY;
-        if (s.captionAnimation == 'slideUp') {
-          captionY =
-              "if(lt(t,${_f(c.start + 0.20)}),"
-              "($baseY)+overlay_h*(1-(t-${_f(c.start)})/0.20),"
-              "$baseY)";
-        } else if (s.captionAnimation == 'slideDown') {
-          captionY =
-              "if(lt(t,${_f(c.start + 0.20)}),"
-              "($baseY)-overlay_h*(1-(t-${_f(c.start)})/0.20),"
-              "$baseY)";
-        }
+        final label = 'caption_motion_$captionIndex';
+        final motionFilter = motionPlan.overlayInputFilter(
+          duration: duration,
+          timelineStart: layer.start,
+        );
+        final scaleValue =
+            layer.ffmpegExpression(TransformProperty.scale, fallback: '1');
+        chains.add(
+          "[$idx:v]$motionFilter,scale=w='max(2,iw*($scaleValue))':h='max(2,ih*($scaleValue))':eval=frame[$label]",
+        );
 
+        final xValue =
+            layer.ffmpegExpression(TransformProperty.x, fallback: '0.5');
+        final yValue =
+            layer.ffmpegExpression(TransformProperty.y, fallback: '0.8');
+        final x = 'main_w*($xValue)-overlay_w/2';
+        final y = 'main_h*($yValue)-overlay_h/2';
         final o = next();
         chains.add(
-          "[$cur][$idx:v]overlay=x=0:y='$captionY':enable='between(t,${_f(c.start)},${_f(c.end)})'[$o]",
+          "[$cur][$label]overlay=x='$x':y='$y':enable='between(t,${_f(layer.start)},${_f(layer.end)})'[$o]",
         );
         cur = o;
+        captionIndex++;
       }
 
-      if (hook != null) {
+      // Keyframed opening title uses the same transform system as captions.
+      final titleLayers = timelineProject
+          .layersOfType(TimelineLayerType.title)
+          .where((layer) => layer.visible && layer.sourcePath != null);
+      var titleIndex = 0;
+      for (final layer in titleLayers) {
         final idx = inputs.length;
-        inputs.add('-i "$hook"');
+        final duration = math.max(0.1, layer.duration).toDouble();
+        inputs.add(
+          '-loop 1 -framerate 30 -t ${_f(duration)} -i "${layer.sourcePath}"',
+        );
+
+        final label = 'title_motion_$titleIndex';
+        final motionFilter = motionPlan.overlayInputFilter(
+          duration: duration,
+          timelineStart: layer.start,
+          fadeInSeconds: motionPlan.hookEnterSeconds,
+          fadeOutSeconds: 0.24,
+        );
+        final scaleValue =
+            layer.ffmpegExpression(TransformProperty.scale, fallback: '1');
+        chains.add(
+          "[$idx:v]$motionFilter,scale=w='max(2,iw*($scaleValue))':h='max(2,ih*($scaleValue))':eval=frame[$label]",
+        );
+
+        final xValue =
+            layer.ffmpegExpression(TransformProperty.x, fallback: '0.5');
+        final yValue =
+            layer.ffmpegExpression(TransformProperty.y, fallback: '0.1');
+        final x = 'main_w*($xValue)-overlay_w/2';
+        final y = 'main_h*($yValue)-overlay_h/2';
         final o = next();
         chains.add(
-          "[$cur][$idx:v]overlay=x=0:y=main_h*0.10:enable='between(t,0.1,3.1)'[$o]",
+          "[$cur][$label]overlay=x='$x':y='$y':enable='between(t,${_f(layer.start)},${_f(layer.end)})'[$o]",
         );
         cur = o;
-        sfxTimes.insert(0, 0.1);
+        titleIndex++;
       }
 
       // Progress bar.
@@ -589,6 +922,7 @@ class Enhancer {
       sizeMb: sizeMb,
       outW: outW,
       outH: outH,
+      timelineProject: timelineProject,
     );
   }
 }
