@@ -346,6 +346,7 @@ class _HomePageState extends State<HomePage> {
 
         return;
       }
+
       setState(() {
         status = AppLocalizations.t('adFinished');
       });
