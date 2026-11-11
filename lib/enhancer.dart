@@ -1,8 +1,10 @@
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 import 'package:flutter/material.dart' hide TransformProperty;
+import 'package:google_fonts/google_fonts.dart';
 import 'analyzer.dart';
 import 'broll.dart';
 import 'settings.dart';
@@ -52,6 +54,19 @@ class _Broll {
   _Broll(this.path, this.start, this.end);
 }
 
+
+class _CoverFrameMetrics {
+  final String path;
+  final double score;
+  final int titleZone;
+
+  const _CoverFrameMetrics({
+    required this.path,
+    required this.score,
+    required this.titleZone,
+  });
+}
+
 /// After silence cutting: captions, hook, B-roll, effects, audio cleanup,
 /// cover generation and final export.
 class Enhancer {
@@ -64,6 +79,324 @@ class Enhancer {
   static Future<bool> _run(String cmd) async {
     final session = await FFmpegKit.execute(cmd);
     return ReturnCode.isSuccess(await session.getReturnCode());
+  }
+
+
+  /// Samples a small, fixed-size frame and scores its sharpness, contrast,
+  /// exposure and the least busy vertical third for safe title placement.
+  /// This is a lightweight composition heuristic, not face recognition.
+  static Future<_CoverFrameMetrics?> _inspectCoverFrame(String path) async {
+    ui.Codec? codec;
+    ui.Image? image;
+    try {
+      final bytes = await File(path).readAsBytes();
+      codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      image = frame.image;
+      final width = image.width;
+      final height = image.height;
+      if (width < 8 || height < 8) return null;
+
+      final raw = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (raw == null) return null;
+      final pixels = raw;
+
+      double lumaAt(int x, int y) {
+        final offset = (y * width + x) * 4;
+        final r = pixels.getUint8(offset).toDouble();
+        final g = pixels.getUint8(offset + 1).toDouble();
+        final b = pixels.getUint8(offset + 2).toDouble();
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      }
+
+      final stepX = math.max(1, width ~/ 96).toInt();
+      final stepY = math.max(1, height ~/ 128).toInt();
+      var sum = 0.0;
+      var sumSq = 0.0;
+      var edgeSum = 0.0;
+      var count = 0;
+      final zoneEdge = List<double>.filled(3, 0);
+      final zoneCount = List<int>.filled(3, 0);
+
+      for (var y = 0; y < height - stepY; y += stepY) {
+        final zone = math.min(2, (y * 3) ~/ height).toInt();
+        for (var x = 0; x < width - stepX; x += stepX) {
+          final current = lumaAt(x, y);
+          final right = lumaAt(x + stepX, y);
+          final below = lumaAt(x, y + stepY);
+          final edge = ((current - right).abs() + (current - below).abs()) / 2;
+
+          sum += current;
+          sumSq += current * current;
+          edgeSum += edge;
+          zoneEdge[zone] += edge;
+          zoneCount[zone]++;
+          count++;
+        }
+      }
+
+      if (count == 0) return null;
+      final mean = sum / count;
+      final variance = math.max(0.0, (sumSq / count) - (mean * mean));
+      final contrast =
+          (math.sqrt(variance) / 68.0).clamp(0.0, 1.0).toDouble();
+      final exposure =
+          (1.0 - (mean - 128.0).abs() / 128.0).clamp(0.0, 1.0).toDouble();
+      final detail = ((edgeSum / count) / 34.0).clamp(0.0, 1.0).toDouble();
+
+      var bestZone = 0;
+      var lowestDetail = double.infinity;
+      for (var i = 0; i < 3; i++) {
+        if (zoneCount[i] == 0) continue;
+        final value = zoneEdge[i] / zoneCount[i];
+        if (value < lowestDetail) {
+          lowestDetail = value;
+          bestZone = i;
+        }
+      }
+
+      final openness =
+          (1.0 - (lowestDetail / 48.0)).clamp(0.0, 1.0).toDouble();
+      final score =
+          contrast * 0.30 + exposure * 0.18 + detail * 0.20 + openness * 0.32;
+
+      return _CoverFrameMetrics(
+        path: path,
+        score: score,
+        titleZone: bestZone,
+      );
+    } catch (_) {
+      return null;
+    } finally {
+      image?.dispose();
+      codec?.dispose();
+    }
+  }
+
+  static TextDirection _coverTextDirection(String text) {
+    for (final rune in text.runes) {
+      if ((rune >= 0x0590 && rune <= 0x08FF) ||
+          (rune >= 0xFB1D && rune <= 0xFDFF) ||
+          (rune >= 0xFE70 && rune <= 0xFEFF)) {
+        return TextDirection.rtl;
+      }
+      if ((rune >= 0x0041 && rune <= 0x005A) ||
+          (rune >= 0x0061 && rune <= 0x007A)) {
+        return TextDirection.ltr;
+      }
+    }
+    return TextDirection.rtl;
+  }
+
+  /// Extracts several small candidate frames and renders a standalone cover.
+  /// The title is placed in the least textured vertical third, with a soft
+  /// gradient behind it. No network image generation or extra package is used.
+  static Future<String?> _createSmartCover({
+    required String videoPath,
+    required String outputPath,
+    required String dir,
+    required int stamp,
+    required double duration,
+    required String title,
+    required String fontFamily,
+    required List<String> temps,
+  }) async {
+    final candidates = <_CoverFrameMetrics>[];
+    const positions = <double>[0.10, 0.27, 0.44, 0.61, 0.78, 0.91];
+    final maxSeek = math.max(0.0, duration - 0.04);
+    final sampleTimes = positions
+        .map((position) => (duration * position).clamp(0.0, maxSeek).toDouble())
+        .toSet()
+        .toList();
+
+    for (var i = 0; i < sampleTimes.length; i++) {
+      final framePath = '$dir/cover_sample_${stamp}_$i.jpg';
+      temps.add(framePath);
+      final ok = await _run(
+        '-y -ss ${_f(sampleTimes[i])} -i "$videoPath" '
+        '-frames:v 1 '
+        '-vf "scale=w=min(iw\\,1280):h=min(ih\\,1280):force_original_aspect_ratio=decrease,setsar=1" '
+        '-q:v 3 "$framePath"',
+      );
+      if (!ok || !File(framePath).existsSync()) continue;
+      final metrics = await _inspectCoverFrame(framePath);
+      if (metrics != null) candidates.add(metrics);
+    }
+
+    if (candidates.isEmpty) return null;
+    candidates.sort((a, b) => b.score.compareTo(a.score));
+    final selected = candidates.first;
+
+    ui.Codec? codec;
+    ui.Image? source;
+    ui.Image? rendered;
+    try {
+      final bytes = await File(selected.path).readAsBytes();
+      codec = await ui.instantiateImageCodec(bytes);
+      source = (await codec.getNextFrame()).image;
+      final width = source.width.toDouble();
+      final height = source.height.toDouble();
+      final recorder = ui.PictureRecorder();
+      final canvas = ui.Canvas(recorder);
+      final bounds = ui.Rect.fromLTWH(0, 0, width, height);
+
+      canvas.drawImageRect(
+        source,
+        ui.Rect.fromLTWH(0, 0, width, height),
+        bounds,
+        ui.Paint()..filterQuality = ui.FilterQuality.high,
+      );
+
+      if (title.trim().isNotEmpty) {
+        final zoneHeight = height / 3;
+        final zoneTop = selected.titleZone.toDouble() * zoneHeight;
+        final zoneRect = ui.Rect.fromLTWH(0, zoneTop, width, zoneHeight);
+        final gradientColors = selected.titleZone == 0
+            ? <ui.Color>[
+                const ui.Color(0xC9000000),
+                const ui.Color(0x00000000),
+              ]
+            : selected.titleZone == 2
+                ? <ui.Color>[
+                    const ui.Color(0x00000000),
+                    const ui.Color(0xC9000000),
+                  ]
+                : <ui.Color>[
+                    const ui.Color(0x00000000),
+                    const ui.Color(0xB8000000),
+                    const ui.Color(0x00000000),
+                  ];
+        final gradientStops = selected.titleZone == 1
+            ? <double>[0.0, 0.5, 1.0]
+            : null;
+        final shader = ui.Gradient.linear(
+          ui.Offset(0, zoneRect.top),
+          ui.Offset(0, zoneRect.bottom),
+          gradientColors,
+          gradientStops,
+        );
+        canvas.drawRect(zoneRect, ui.Paint()..shader = shader);
+
+        final fontSize =
+            math.max(24.0, math.min(width * 0.083, height * 0.070)).toDouble();
+        final baseStyle = TextStyle(
+          fontFamily: fontFamily,
+          fontSize: fontSize,
+          fontWeight: FontWeight.w900,
+          height: 1.18,
+          letterSpacing: 0,
+        );
+        TextStyle loadedStyle;
+        try {
+          loadedStyle = await GoogleFonts.getFont(
+            fontFamily,
+            textStyle: baseStyle,
+          );
+        } catch (_) {
+          loadedStyle = baseStyle;
+        }
+
+        final direction = _coverTextDirection(title);
+        TextPainter makePainter(TextStyle style) => TextPainter(
+              text: TextSpan(text: title.trim(), style: style),
+              textDirection: direction,
+              textAlign: TextAlign.center,
+              maxLines: 3,
+              ellipsis: '…',
+            )..layout(maxWidth: width * 0.84);
+
+        final fillPainter = makePainter(
+          loadedStyle.copyWith(
+            color: const ui.Color(0xFFFFF8E8),
+            shadows: const <Shadow>[
+              Shadow(
+                color: Color(0xD9000000),
+                blurRadius: 12,
+                offset: Offset(0, 3),
+              ),
+            ],
+          ),
+        );
+        final strokePainter = makePainter(
+          loadedStyle.copyWith(
+            foreground: ui.Paint()
+              ..style = ui.PaintingStyle.stroke
+              ..strokeJoin = ui.StrokeJoin.round
+              ..strokeWidth = math.max(2.0, width * 0.003).toDouble()
+              ..color = const ui.Color(0xCC000000),
+          ),
+        );
+
+        final centerY = height * (selected.titleZone == 0
+            ? 0.17
+            : selected.titleZone == 1
+                ? 0.50
+                : 0.83);
+        final minimumTop = zoneRect.top + height * 0.025;
+        final maximumTop = math.max(
+          minimumTop,
+          zoneRect.bottom - fillPainter.height - height * 0.025,
+        );
+        final textTop = (centerY - fillPainter.height / 2)
+            .clamp(minimumTop, maximumTop)
+            .toDouble();
+        final textLeft = (width - fillPainter.width) / 2;
+        strokePainter.paint(canvas, ui.Offset(textLeft, textTop));
+        fillPainter.paint(canvas, ui.Offset(textLeft, textTop));
+
+        final accentY = textTop + fillPainter.height + height * 0.012;
+        final accentHeight = math.max(3.0, width * 0.004).toDouble();
+        final accentWidth = math.max(42.0, width * 0.105).toDouble();
+        if (accentY + accentHeight < zoneRect.bottom - height * 0.012) {
+          final accentRect = ui.RRect.fromRectAndRadius(
+            ui.Rect.fromLTWH(
+              (width - accentWidth) / 2,
+              accentY,
+              accentWidth,
+              accentHeight,
+            ),
+            ui.Radius.circular(width * 0.01),
+          );
+          canvas.drawRRect(
+            accentRect,
+            ui.Paint()..color = const ui.Color(0xFFFFD45A),
+          );
+        }
+      } else {
+        // A restrained edge vignette keeps a clean cover when no title exists.
+        final vignette = ui.Gradient.radial(
+          ui.Offset(width / 2, height / 2),
+          math.max(width, height).toDouble() * 0.78,
+          const <ui.Color>[
+            ui.Color(0x00000000),
+            ui.Color(0x55000000),
+          ],
+        );
+        canvas.drawRect(bounds, ui.Paint()..shader = vignette);
+      }
+
+      final picture = recorder.endRecording();
+      rendered = await picture.toImage(source.width, source.height);
+      picture.dispose();
+      final png = await rendered.toByteData(format: ui.ImageByteFormat.png);
+      if (png == null) return null;
+
+      final output = File(outputPath);
+      await output.parent.create(recursive: true);
+      await output.writeAsBytes(
+        png.buffer.asUint8List(png.offsetInBytes, png.lengthInBytes),
+        flush: true,
+      );
+      return await output.exists() && await output.length() > 0
+          ? outputPath
+          : null;
+    } catch (_) {
+      return null;
+    } finally {
+      rendered?.dispose();
+      source?.dispose();
+      codec?.dispose();
+    }
   }
 
   static String _styleFilter(String style) {
@@ -884,36 +1217,45 @@ class Enhancer {
       notes.add('فشل التصدير المحسّن؛ هذه نسخة القص فقط.');
     }
 
-    // 7) Create a cover image from the edited source frame and AI title.
+    // 7) Create a standalone smart cover. Candidate frames are scored locally,
+    // then the title is placed in the least textured vertical third.
     String? coverPath;
     try {
-      onStatus?.call('جاري تجهيز الغلاف...');
-      final at = cutSec > 2 ? 1.0 : 0.0;
-      final cover = '$dir/cover_$stamp.jpg';
-      bool coverOk;
-      if (analysis != null && analysis.title.isNotEmpty) {
-        final titlePath = await TextRender.png(
-          text: analysis.title,
-          outPath: '$dir/covtitle_$stamp.png',
-          width: outW,
-          fontSize: outW * 0.105,
-          fill: const Color(0xFFFFD400),
-          box: true,
-          fontFamily: s.captionFont,
-          style: 'boxed',
-        );
-        temps.add(titlePath);
-        coverOk = await _run(
-          '-y -ss ${_f(at)} -i "$cutPath" -i "$titlePath" -filter_complex "[0:v]scale=$outW:$outH:flags=lanczos,setsar=1[b];[b][1:v]overlay=x=0:y=(main_h-overlay_h)/2[o]" -map "[o]" -frames:v 1 -q:v 2 "$cover"',
+      onStatus?.call('جاري اختيار أفضل لقطة وتصميم الغلاف الذكي...');
+      final cover = '$dir/cover_$stamp.png';
+      final smartCover = await _createSmartCover(
+        videoPath: cutPath,
+        outputPath: cover,
+        dir: dir,
+        stamp: stamp,
+        duration: cutSec,
+        title: analysis?.title ?? '',
+        fontFamily: s.captionFont,
+        temps: temps,
+      );
+
+      if (smartCover != null) {
+        coverPath = smartCover;
+        notes.add(
+          'تم اختيار لقطة الغلاف تلقائياً ووضع العنوان في المساحة الأقل ازدحاماً.',
         );
       } else {
-        coverOk = await _run(
-          '-y -ss ${_f(at)} -i "$cutPath" -vf "scale=$outW:$outH:flags=lanczos" -frames:v 1 -q:v 2 "$cover"',
+        // Safe fallback: keep the export working even if image decoding fails.
+        onStatus?.call('تعذر تحليل لقطات الغلاف؛ جاري إنشاء غلاف احتياطي...');
+        final at = cutSec > 2 ? 1.0 : 0.0;
+        final fallback = '$dir/cover_fallback_$stamp.jpg';
+        final fallbackOk = await _run(
+          '-y -ss ${_f(at)} -i "$cutPath" '
+          '-vf "scale=$outW:$outH:flags=lanczos" '
+          '-frames:v 1 -q:v 2 "$fallback"',
         );
+        if (fallbackOk && File(fallback).existsSync()) {
+          coverPath = fallback;
+        }
+        notes.add('تم استخدام غلاف احتياطي بدلاً من التصميم الذكي.');
       }
-      if (coverOk && File(cover).existsSync()) coverPath = cover;
     } catch (e) {
-      notes.add('تعذر تجهيز الغلاف: $e');
+      notes.add('تعذر تجهيز الغلاف الذكي: $e');
     }
 
     // 8) Persist the complete project before deleting temporary media.
