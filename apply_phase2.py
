@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 
 from pathlib import Path
@@ -13,8 +14,7 @@ def replace_once(source, old, new, label):
 
     if count != 1:
         raise SystemExit(
-            f"ERROR: Expected exactly one match for {label}, "
-            f"found {count}. No safe patch was applied."
+            f"ERROR: {label}: expected exactly one match, found {count}."
         )
 
     print(f"Applied: {label}")
@@ -28,21 +28,18 @@ def main():
     )
 
     if not target.is_file():
-        raise SystemExit(f"ERROR: Enhancer file not found: {target}")
+        raise SystemExit(f"Enhancer file not found: {target}")
 
     source = target.read_text(encoding="utf-8")
 
-    # 1. Import the new motion module.
-    if "import 'motion_graphics.dart';" not in source:
-        source = replace_once(
-            source,
-            "import 'editing_engine.dart';\n",
-            "import 'editing_engine.dart';\n"
-            "import 'motion_graphics.dart';\n",
-            "motion graphics import",
-        )
+    source = replace_once(
+        source,
+        "import 'editing_engine.dart';\n",
+        "import 'editing_engine.dart';\n"
+        "import 'motion_graphics.dart';\n",
+        "motion graphics import",
+    )
 
-    # 2. Create the motion plan from the existing topic profile.
     source = replace_once(
         source,
         """    final editingProfile = EditingEngine.select(
@@ -59,7 +56,6 @@ def main():
         "topic-aware motion plan",
     )
 
-    # 3. Fade B-roll in and out instead of showing it as a hard cut.
     source = replace_once(
         source,
         """        chains.add(
@@ -70,10 +66,9 @@ def main():
           '[$idx:v]${motionPlan.brollInputFilter(width: outW, height: outH, start: b.start, end: b.end)}[bv$idx]',
         );
 """,
-        "B-roll fade and timeline animation",
+        "B-roll animation",
     )
 
-    # 4. Replace the old caption overlay with animated alpha and movement.
     old_caption = """        inputs.add(
           '-loop 1 -framerate 30 -t ${_f(duration)} -i "${capFiles[i]}"',
         );
@@ -140,10 +135,9 @@ def main():
         source,
         old_caption,
         new_caption,
-        "animated caption overlays",
+        "animated captions",
     )
 
-    # 5. Animate the opening hook/title.
     source = replace_once(
         source,
         """        inputs.add('-i "$hook"');
@@ -194,7 +188,7 @@ def main():
     )
 
     target.write_text(source, encoding="utf-8")
-    print(f"Motion Graphics integration completed: {target}")
+    print(f"Motion Graphics integration complete: {target}")
 
 
 if __name__ == "__main__":
