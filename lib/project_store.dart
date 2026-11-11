@@ -201,8 +201,62 @@ class ProjectStore {
       flush: true,
     );
 
-    if (await manifest.exists()) await manifest.delete();
-    await temporary.rename(manifest.path);
+    File? backup;
+    if (await manifest.exists()) {
+      backup = File('${manifest.path}.bak');
+      if (await backup.exists()) await backup.delete();
+      await manifest.rename(backup.path);
+    }
+
+    try {
+      await temporary.rename(manifest.path);
+      if (backup != null && await backup.exists()) {
+        await backup.delete();
+      }
+    } catch (_) {
+      if (backup != null &&
+          await backup.exists() &&
+          !(await manifest.exists())) {
+        await backup.rename(manifest.path);
+      }
+      rethrow;
+    }
+  }
+
+  /// Returns every missing or unsafe media path referenced by a saved entry.
+  /// Paths must remain inside the project's own folder; a damaged manifest
+  /// must never make the library read arbitrary files elsewhere on the phone.
+  Future<List<String>> validateAssets(SavedProject project) async {
+    final root = await Directory(project.directoryPath).resolveSymbolicLinks();
+    final prefix = root.endsWith(Platform.pathSeparator)
+        ? root
+        : '$root${Platform.pathSeparator}';
+    final paths = <String>{
+      project.videoPath,
+      if (project.coverPath != null) project.coverPath!,
+      ...project.timelineProject.layers
+          .map((layer) => layer.sourcePath)
+          .whereType<String>(),
+    };
+    final problems = <String>[];
+
+    for (final path in paths) {
+      final file = File(path);
+      if (!await file.exists()) {
+        problems.add('Saved asset is missing: $path');
+        continue;
+      }
+
+      try {
+        final resolved = await file.resolveSymbolicLinks();
+        if (resolved != root && !resolved.startsWith(prefix)) {
+          problems.add('Asset path is outside the project folder: $path');
+        }
+      } catch (_) {
+        problems.add('Saved asset cannot be resolved: $path');
+      }
+    }
+    return problems;
   }
 
   /// Saves an export and copies every source asset referenced by its timeline
@@ -323,7 +377,8 @@ class ProjectStore {
           Map<String, dynamic>.from(decoded),
           directoryPath: entity.path,
         );
-        if (project.timelineProject.validate().isEmpty) {
+        if (project.timelineProject.validate().isEmpty &&
+            (await validateAssets(project)).isEmpty) {
           projects.add(project);
         }
       } catch (_) {
@@ -353,6 +408,12 @@ class ProjectStore {
     final errors = project.timelineProject.validate();
     if (errors.isNotEmpty) {
       throw FormatException('Invalid saved timeline: ${errors.first}');
+    }
+    final assetProblems = await validateAssets(project);
+    if (assetProblems.isNotEmpty) {
+      throw FormatException(
+        'Saved project assets are incomplete: ${assetProblems.first}',
+      );
     }
     return project;
   }
