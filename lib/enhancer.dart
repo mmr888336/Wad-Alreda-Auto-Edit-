@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide TransformProperty;
 import 'analyzer.dart';
 import 'broll.dart';
 import 'settings.dart';
@@ -444,8 +444,7 @@ class Enhancer {
     if (editingProfile.isAutomatic && profileText.isNotEmpty) {
       notes.add('المحرك التلقائي اختار أسلوب: ${editingProfile.label}.');
     }
-
-    // 3) Render caption and hook images.
+        // 3) Render caption and hook images.
     final caps = <Caption>[];
     final capFiles = <String>[];
     String? hookFile;
@@ -490,6 +489,7 @@ class Enhancer {
         notes.add('تعذر رسم النصوص: $e');
       }
     }
+
     // 4) Fetch topic-related B-roll, subject to the existing safety check.
     final brolls = <_Broll>[];
     if (s.broll && analysis != null && analysis.broll.isNotEmpty) {
