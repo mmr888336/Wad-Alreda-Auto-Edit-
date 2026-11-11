@@ -24,6 +24,7 @@ class ProjectsPage extends StatefulWidget {
 class _ProjectsPageState extends State<ProjectsPage> {
   bool _loading = true;
   String? _error;
+  String? _openingProjectId;
   List<SavedProject> _projects = const [];
 
   @override
@@ -33,6 +34,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
   }
 
   Future<void> _reload() async {
+    if (!mounted) return;
     setState(() {
       _loading = true;
       _error = null;
@@ -54,18 +56,34 @@ class _ProjectsPageState extends State<ProjectsPage> {
     }
   }
 
-  void _open(SavedProject project) {
-    final callback = widget.onProjectOpened;
-    if (callback != null) {
-      callback(project);
-      return;
-    }
+  Future<void> _open(SavedProject project) async {
+    if (_openingProjectId != null) return;
+    setState(() => _openingProjectId = project.id);
 
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => TimelinePage(project: project.timelineProject),
-      ),
-    );
+    try {
+      // Reload from disk and validate every media path before opening.
+      final latest = await widget.store.load(project.id);
+      if (!mounted) return;
+
+      final callback = widget.onProjectOpened;
+      if (callback != null) {
+        callback(latest);
+        return;
+      }
+
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => TimelinePage(
+            project: latest.timelineProject,
+          ),
+        ),
+      );
+    } catch (error) {
+      _showMessage('تعذر فتح المشروع أو توجد ملفات مفقودة: $error');
+      await _reload();
+    } finally {
+      if (mounted) setState(() => _openingProjectId = null);
+    }
   }
 
   Future<void> _rename(SavedProject project) async {
@@ -221,8 +239,18 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                 ),
                               ),
                               isThreeLine: true,
-                              onTap: () => _open(project),
-                              trailing: PopupMenuButton<String>(
+                              onTap: _openingProjectId == null
+                                  ? () => _open(project)
+                                  : null,
+                              trailing: _openingProjectId == project.id
+                                  ? const SizedBox(
+                                      width: 22,
+                                      height: 22,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : PopupMenuButton<String>(
                                 onSelected: (value) {
                                   if (value == 'rename') {
                                     _rename(project);
