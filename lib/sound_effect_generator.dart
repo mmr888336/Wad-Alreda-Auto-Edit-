@@ -37,6 +37,12 @@ class SoundEffectGenerator {
     'low_sweep': [0.52, 55, 1300, 0.48, 0.12, 0.28],
   };
 
+  /// Exact duration for positioning this generated preset on the timeline.
+  static double durationFor(String style) {
+    if (style == 'none') return 0;
+    return (_presets[style] ?? _presets['whoosh_soft']!)[0].toDouble();
+  }
+
   static Future<bool> render({
     required String style,
     required String outputPath,
@@ -51,14 +57,9 @@ class SoundEffectGenerator {
     final lowPass = p[2].toInt();
     final gain = p[3].toDouble();
 
-    final fadeIn =
-        p[4].toDouble().clamp(0.001, duration / 2);
-
-    final fadeOut =
-        p[5].toDouble().clamp(0.02, duration / 2);
-
-    final fadeOutStart =
-        (duration - fadeOut).clamp(0.0, duration - 0.01);
+    final fadeIn = p[4].toDouble().clamp(0.001, duration / 2);
+    final fadeOut = p[5].toDouble().clamp(0.02, duration / 2);
+    final fadeOutStart = (duration - fadeOut).clamp(0.0, duration - 0.01);
 
     final filters = [
       'highpass=f=$highPass',
