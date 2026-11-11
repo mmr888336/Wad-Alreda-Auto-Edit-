@@ -56,8 +56,19 @@ jobs:
           test -f app/test/editing_engine_test.dart
           test -f app/test/motion_graphics_test.dart
 
+          cat > app/android/app/proguard-rules.pro <<'PROGUARD'
+          -keep class androidx.work.** { *; }
+          -keep class androidx.room.** { *; }
+          -keep class * extends androidx.room.RoomDatabase { *; }
+          -keep class androidx.work.impl.WorkDatabase_Impl { *; }
+          -keep class com.unity3d.** { *; }
+          -keep class com.arthenica.ffmpegkit.** { *; }
+          -keep class com.antonkarpenko.ffmpegkit.** { *; }
+          -dontwarn com.unity3d.**
+          PROGUARD
+
           echo "Android project created."
-          echo "Source files copied successfully."
+          echo "Release rules restored."
 
       - name: Apply Motion Graphics Phase 2
         shell: bash
@@ -102,7 +113,7 @@ jobs:
           print("Flutter manifest validated.")
           PY
 
-      - name: Configure Android permissions and SDK
+      - name: Configure Android permissions and release
         working-directory: app
         shell: bash
         run: |
@@ -132,13 +143,49 @@ jobs:
           manifest.write_text(content, encoding="utf-8")
           PY
 
-          if [ -f android/app/build.gradle ]; then
-            sed -i 's/flutter.minSdkVersion/24/g' android/app/build.gradle
-          fi
-
           if [ -f android/app/build.gradle.kts ]; then
             sed -i 's/flutter.minSdkVersion/24/g' android/app/build.gradle.kts
+
+            cat >> android/app/build.gradle.kts <<'GRADLE'
+
+          android {
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      isShrinkResources = false
+                      proguardFiles("proguard-rules.pro")
+                  }
+              }
+          }
+          GRADLE
+
+          elif [ -f android/app/build.gradle ]; then
+            sed -i 's/flutter.minSdkVersion/24/g' android/app/build.gradle
+
+            cat >> android/app/build.gradle <<'GRADLE'
+
+          android {
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      shrinkResources false
+                      proguardFiles 'proguard-rules.pro'
+                  }
+              }
+          }
+          GRADLE
+
+          else
+            echo "::error::Android app Gradle file not found."
+            exit 1
           fi
+
+          echo "Android release configuration restored."
+
+      - name: Configure plugin compile SDK compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
 
           mkdir -p "$HOME/.gradle/init.d"
 
@@ -152,8 +199,6 @@ jobs:
             }
           }
           GRADLE
-
-          echo "Android configuration completed."
 
       - name: Resolve Flutter dependencies
         working-directory: app
@@ -203,7 +248,7 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           name: Wad Alreda AutoEdit build ${{ github.run_number }}
-          body: Automated Android release build.
+          body: Android diagnostic build with restored release configuration.
           files: app/build/app/outputs/flutter-apk/app-release.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
