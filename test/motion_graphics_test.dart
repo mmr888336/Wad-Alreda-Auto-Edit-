@@ -1,4 +1,3 @@
-
 import 'package:auto_edit/editing_engine.dart';
 import 'package:auto_edit/motion_graphics.dart';
 import 'package:flutter_test/flutter_test.dart';
