@@ -89,7 +89,6 @@ jobs:
           grep -q "required this.timelineProject" lib/enhancer.dart
           grep -q "static double durationFor(String style)" lib/sound_effect_generator.dart
 
-
           echo "Phase 3A source integration verified."
 
       - name: Validate Flutter manifest
@@ -258,12 +257,3 @@ jobs:
           files: app/build/app/outputs/flutter-apk/app-release.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Save APK artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: wad-alreda-autoedit-apk
-          path: app/build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: error
-          retention-days: 14
