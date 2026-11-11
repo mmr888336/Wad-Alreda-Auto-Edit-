@@ -12,6 +12,7 @@ import 'timeline_engine.dart';
 import 'sound_effect_generator.dart';
 import 'silence_cutter.dart';
 import 'text_render.dart';
+import 'project_store.dart';
 
 class EnhanceResult {
   final String videoPath;
@@ -27,6 +28,7 @@ class EnhanceResult {
   /// The exact layer manifest used by the renderer for this export.
   /// It is passed to the next Studio/timeline stage as structured data.
   final TimelineProject timelineProject;
+  final SavedProject? savedProject;
 
   EnhanceResult({
     required this.videoPath,
@@ -39,6 +41,7 @@ class EnhanceResult {
     required this.outW,
     required this.outH,
     required this.timelineProject,
+    this.savedProject,
   });
 }
 
@@ -900,21 +903,71 @@ class Enhancer {
       notes.add('تعذر تجهيز الغلاف: $e');
     }
 
-    for (final path in temps) {
-      try {
-        File(path).deleteSync();
-      } catch (_) {}
-    }
-    if (finalPath != cutPath) {
-      try {
-        File(cutPath).deleteSync();
-      } catch (_) {}
+    // 8) Persist the complete project before deleting temporary media.
+    // ProjectStore copies the final video, cover and every sourcePath used by
+    // the timeline (caption PNGs, B-roll and generated sound effects).
+    SavedProject? savedProject;
+    try {
+      onStatus?.call('جاري حفظ المشروع وملفات المونتاج...');
+      savedProject = await const ProjectStore().saveExport(
+        project: timelineProject,
+        videoPath: finalPath,
+        coverPath: coverPath,
+        name: analysis?.title.trim().isNotEmpty == true
+            ? analysis!.title.trim()
+            : null,
+      );
+      notes.add('تم حفظ المشروع وملفاته داخل مكتبة Wad Alreda Studio.');
+    } catch (e) {
+      notes.add('تعذر حفظ نسخة المشروع: $e');
     }
 
-    final sizeMb = File(finalPath).lengthSync() / (1024 * 1024);
+    final resultVideoPath = savedProject?.videoPath ?? finalPath;
+    final resultCoverPath = savedProject?.coverPath ?? coverPath;
+    final resultTimeline = savedProject?.timelineProject ?? timelineProject;
+
+    // Only remove timeline source assets after they have been copied safely.
+    // If saving failed, keep referenced files so this session can still open
+    // its timeline instead of pointing at files that no longer exist.
+    if (savedProject != null) {
+      final pathsToDelete = <String>{
+        ...temps,
+        cutPath,
+        finalPath,
+        if (coverPath != null) coverPath,
+      };
+      for (final path in pathsToDelete) {
+        try {
+          final file = File(path);
+          if (await file.exists()) await file.delete();
+        } catch (_) {}
+      }
+    } else {
+      final referenced = timelineProject.layers
+          .map((layer) => layer.sourcePath)
+          .whereType<String>()
+          .toSet();
+      for (final path in temps) {
+        if (referenced.contains(path)) continue;
+        try {
+          final file = File(path);
+          if (await file.exists()) await file.delete();
+        } catch (_) {}
+      }
+    }
+
+    if (!await File(resultVideoPath).exists()) {
+      throw FileSystemException(
+        'Exported video disappeared before the result was returned.',
+        resultVideoPath,
+      );
+    }
+
+    final resultSizeBytes = await File(resultVideoPath).length();
+    final sizeMb = resultSizeBytes / (1024 * 1024);
     return EnhanceResult(
-      videoPath: finalPath,
-      coverPath: coverPath,
+      videoPath: resultVideoPath,
+      coverPath: resultCoverPath,
       title: analysis?.title ?? '',
       description: analysis?.description ?? '',
       hashtags: analysis?.hashtags ?? <String>[],
@@ -922,7 +975,8 @@ class Enhancer {
       sizeMb: sizeMb,
       outW: outW,
       outH: outH,
-      timelineProject: timelineProject,
+      timelineProject: resultTimeline,
+      savedProject: savedProject,
     );
   }
 }
