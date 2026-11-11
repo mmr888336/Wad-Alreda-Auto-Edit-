@@ -375,8 +375,21 @@ class Enhancer {
     onStatus?.call('جاري فحص الفيديو...');
     final info = await SilenceCutter.probe(cutPath);
     final short = math.min(info.w, info.h);
-    final targetShort = s.upscale2k ? 1440 : math.min(short, 1440);
+
+    // 2K is a minimum output target for suitable HD sources, never a reason
+    // to downscale higher-resolution footage or enlarge very small sources.
+    final shouldUpscaleTo2k =
+        s.upscale2k && short >= 720 && short < 1440;
+    final targetShort = shouldUpscaleTo2k ? 1440 : short;
     final factor = targetShort / short;
+
+    if (s.upscale2k && short < 720) {
+      notes.add(
+        'دقة الفيديو الأصلية أقل من 720p؛ تم الحفاظ عليها لتجنب تكبير غير حقيقي.',
+      );
+    } else if (s.upscale2k && short > 1440) {
+      notes.add('تم الحفاظ على دقة الفيديو الأصلية العالية دون تصغير.');
+    }
 
     int even(double value) {
       var result = value.round();
