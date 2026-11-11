@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 
 
-def replace_once(source, old, new, label):
+def replace_exact(source, old, new, label):
     if new in source:
         print(f"Already applied: {label}")
         return source
@@ -14,7 +14,7 @@ def replace_once(source, old, new, label):
 
     if count != 1:
         raise SystemExit(
-            f"ERROR: {label}: expected exactly one match, found {count}."
+            f"ERROR: {label}: expected 1 matching block, found {count}."
         )
 
     print(f"Applied: {label}")
@@ -32,7 +32,8 @@ def main():
 
     source = target.read_text(encoding="utf-8")
 
-    source = replace_once(
+    # 1. Import motion graphics engine.
+    source = replace_exact(
         source,
         "import 'editing_engine.dart';\n",
         "import 'editing_engine.dart';\n"
@@ -40,7 +41,8 @@ def main():
         "motion graphics import",
     )
 
-    source = replace_once(
+    # 2. Create topic-aware motion plan.
+    source = replace_exact(
         source,
         """    final editingProfile = EditingEngine.select(
       content: profileText,
@@ -56,7 +58,8 @@ def main():
         "topic-aware motion plan",
     )
 
-    source = replace_once(
+    # 3. Animate B-roll clips.
+    source = replace_exact(
         source,
         """        chains.add(
           '[$idx:v]scale=$outW:$outH:force_original_aspect_ratio=increase,crop=$outW:$outH,setsar=1,setpts=PTS-STARTPTS+${_f(b.start)}/TB[bv$idx]',
@@ -69,6 +72,7 @@ def main():
         "B-roll animation",
     )
 
+    # 4. Animate captions.
     old_caption = """        inputs.add(
           '-loop 1 -framerate 30 -t ${_f(duration)} -i "${capFiles[i]}"',
         );
@@ -100,6 +104,7 @@ def main():
         );
 
         final captionLabel = 'capmotion$i';
+
         chains.add(
           '[$idx:v]${motionPlan.overlayInputFilter(duration: duration, timelineStart: c.start)}[$captionLabel]',
         );
@@ -126,19 +131,21 @@ def main():
         );
 
         final o = next();
+
         chains.add(
           "[$cur][$captionLabel]overlay=x='$captionX':y='$captionY':enable='between(t,${_f(c.start)},${_f(c.end)})'[$o]",
         );
 """
 
-    source = replace_once(
+    source = replace_exact(
         source,
         old_caption,
         new_caption,
         "animated captions",
     )
 
-    source = replace_once(
+    # 5. Animate opening hook/title.
+    source = replace_exact(
         source,
         """        inputs.add('-i "$hook"');
         final o = next();
@@ -187,8 +194,27 @@ def main():
         "animated opening hook",
     )
 
+    # Final validation.
+    required = [
+        "import 'motion_graphics.dart';",
+        "final motionPlan = MotionGraphicsPlan.forProfile(editingProfile);",
+        "motionPlan.brollInputFilter(",
+        "motionPlan.overlayInputFilter(",
+        "motionPlan.hookXExpression(",
+    ]
+
+    missing = [item for item in required if item not in source]
+
+    if missing:
+        raise SystemExit(
+            "ERROR: Motion Graphics integration incomplete: "
+            + ", ".join(missing)
+        )
+
     target.write_text(source, encoding="utf-8")
-    print(f"Motion Graphics integration complete: {target}")
+
+    print("Motion Graphics phase 2 integration completed.")
+    print(f"Updated file: {target}")
 
 
 if __name__ == "__main__":
