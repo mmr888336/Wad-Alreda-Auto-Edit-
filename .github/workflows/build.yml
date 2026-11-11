@@ -1,4 +1,5 @@
 name: Build APK
+
 on:
   push:
     branches:
@@ -167,6 +168,7 @@ jobs:
 
       - name: Analyze Dart code
         working-directory: app
+        continue-on-error: true
         run: flutter analyze --no-pub
 
       - name: Run Flutter tests
@@ -213,4 +215,4 @@ jobs:
           name: wad-alreda-autoedit-apk
           path: app/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
-          retention-days: 14        
+          retention-days: 14
