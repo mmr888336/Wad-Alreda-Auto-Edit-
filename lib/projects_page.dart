@@ -243,12 +243,10 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                   ? () => _open(project)
                                   : null,
                               trailing: _openingProjectId == project.id
-                                  ? const SizedBox(
-                                      width: 22,
-                                      height: 22,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
+                                  ? const Icon(
+                                      Icons.lock_open_rounded,
+                                      color: Colors.white54,
+                                      size: 20,
                                     )
                                   : PopupMenuButton<String>(
                                 onSelected: (value) {
