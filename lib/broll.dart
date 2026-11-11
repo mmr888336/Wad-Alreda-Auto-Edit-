@@ -31,14 +31,17 @@ class BrollFetcher {
     'actress',
   ];
 
+  /// Checks blocked words without a regex end-anchor. Using a padded token set
+  /// also avoids treating substrings such as "human" as "woman".
   static bool _bad(String text) {
-    final value = text.toLowerCase();
-    for (final word in _blocked) {
-      if (RegExp('(^|[^a-z])$word([^a-z]|\\$)').hasMatch(value)) {
-        return true;
-      }
-    }
-    return false;
+    final normalized = text
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z]+'), ' ')
+        .trim();
+    if (normalized.isEmpty) return false;
+
+    final words = normalized.split(RegExp(r'\s+')).toSet();
+    return _blocked.any((word) => words.contains(word));
   }
 
   static int _dimension(dynamic value) {
