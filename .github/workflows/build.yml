@@ -53,8 +53,12 @@ jobs:
           test -f app/lib/enhancer.dart
           test -f app/lib/editing_engine.dart
           test -f app/lib/motion_graphics.dart
+          test -f app/lib/timeline_engine.dart
+          test -f app/lib/sound_effect_generator.dart
           test -f app/test/editing_engine_test.dart
           test -f app/test/motion_graphics_test.dart
+          test -f app/test/timeline_engine_test.dart
+          test -f app/test/sound_effect_generator_test.dart
 
           cat > app/android/app/proguard-rules.pro <<'PROGUARD'
           -keep class androidx.work.** { *; }
@@ -70,21 +74,23 @@ jobs:
           echo "Android project created."
           echo "Release rules restored."
 
-      - name: Apply Motion Graphics Phase 2
+      - name: Verify source-level Phase 3A integration
+        working-directory: app
         shell: bash
         run: |
           set -euo pipefail
 
-          python3 -m py_compile apply_phase2.py
+          grep -q "import 'timeline_engine.dart';" lib/enhancer.dart
+          grep -q "final motionPlan = MotionGraphicsPlan.forProfile" lib/enhancer.dart
+          grep -q "_createTimelineProject(" lib/enhancer.dart
+          grep -q "layersOfType(TimelineLayerType.caption)" lib/enhancer.dart
+          grep -q "layersOfType(TimelineLayerType.title)" lib/enhancer.dart
+          grep -q "layersOfType(TimelineLayerType.broll)" lib/enhancer.dart
+          grep -q "required this.timelineProject" lib/enhancer.dart
+          grep -q "static double durationFor(String style)" lib/sound_effect_generator.dart
 
-          python3 apply_phase2.py app/lib/enhancer.dart
 
-          grep -q "import 'motion_graphics.dart';" app/lib/enhancer.dart
-          grep -q "MotionGraphicsPlan.forProfile" app/lib/enhancer.dart
-          grep -q "motionPlan.brollInputFilter" app/lib/enhancer.dart
-          grep -q "motionPlan.overlayInputFilter" app/lib/enhancer.dart
-
-          echo "Phase 2 integration verified."
+          echo "Phase 3A source integration verified."
 
       - name: Validate Flutter manifest
         working-directory: app
@@ -248,7 +254,7 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           name: Wad Alreda AutoEdit build ${{ github.run_number }}
-          body: Android diagnostic build with restored release configuration.
+          body: Android build with source-integrated Phase 3A keyframe timeline engine.
           files: app/build/app/outputs/flutter-apk/app-release.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
