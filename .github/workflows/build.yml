@@ -11,7 +11,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,10 +32,21 @@ jobs:
       - name: Create Android scaffold
         shell: bash
         run: |
+          set -euo pipefail
+
           flutter create --platforms=android --org com.omer.autoedit --project-name auto_edit app
+
           rm -rf app/test app/lib
+
           cp -r lib app/lib
+          cp -r test app/test
           cp pubspec.yaml app/pubspec.yaml
+
+          if [ ! -f app/test/editing_engine_test.dart ] || [ ! -f app/test/motion_graphics_test.dart ]; then
+            echo "::error::Required tests are missing."
+            exit 1
+          fi
+
           cat > app/android/app/proguard-rules.pro <<'PROGUARD'
           -keep class androidx.work.** { *; }
           -keep class androidx.room.** { *; }
@@ -46,27 +58,60 @@ jobs:
           -dontwarn com.unity3d.**
           PROGUARD
 
+      - name: Apply Motion Graphics engine
+        run: python3 apply_phase2.py app/lib/enhancer.dart
+
+      - name: Validate Flutter manifest
+        working-directory: app
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          p = Path("pubspec.yaml")
+          data = p.read_text(encoding="utf-8")
+
+          if not re.search(r"(?m)^name:\s*[A-Za-z0-9_]+\s*$", data):
+              sys.exit("::error::Invalid Flutter pubspec.yaml.")
+
+          if not re.search(r"(?m)^dependencies:\s*$", data):
+              sys.exit("::error::Missing dependencies in pubspec.yaml.")
+
+          if not re.search(r"(?m)^  sdk:\s*['\"]?>?=?\s*3\.", data):
+              sys.exit("::error::Dart SDK constraint is missing.")
+
+          print("Flutter manifest validated.")
+          PY
+
       - name: Patch Android permissions and SDK settings
         working-directory: app
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
+
           manifest = Path('android/app/src/main/AndroidManifest.xml')
           content = manifest.read_text(encoding='utf-8')
+
           permissions = '''    <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
               <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
               <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
               <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
           '''
+
           if 'android.permission.INTERNET' not in content:
               content = content.replace('<application', permissions + '    <application', 1)
+
           manifest.write_text(content, encoding='utf-8')
           PY
 
           for f in android/app/build.gradle android/app/build.gradle.kts; do
-            if [ -f "$f" ]; then sed -i 's/flutter.minSdkVersion/24/g' "$f"; fi
+            if [ -f "$f" ]; then
+              sed -i 's/flutter.minSdkVersion/24/g' "$f"
+            fi
           done
 
           if [ -f android/app/build.gradle.kts ]; then
@@ -101,6 +146,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p ~/.gradle/init.d
+
           cat > ~/.gradle/init.d/force-sdk.gradle <<'GRADLE'
           allprojects {
             afterEvaluate { p ->
@@ -115,6 +161,21 @@ jobs:
         working-directory: app
         run: flutter pub get
 
+      - name: Format Dart sources
+        working-directory: app
+        run: >
+          dart format
+          lib/settings.dart
+          lib/enhancer.dart
+          lib/editing_engine.dart
+          lib/motion_graphics.dart
+          test/editing_engine_test.dart
+          test/motion_graphics_test.dart
+
+      - name: Run Flutter tests
+        working-directory: app
+        run: flutter test
+
       - name: Build release APK (arm64)
         working-directory: app
         run: flutter build apk --release --target-platform android-arm64 --no-shrink
@@ -124,16 +185,16 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           name: Wad Alreda Studio build ${{ github.run_number }}
-          body: Automated Android APK build.
+          body: Motion Graphics phase 2 build.
           files: app/build/app/outputs/flutter-apk/app-release.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Save APK as workflow artifact
-        if: always() && success()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: wad-alreda-studio-apk
           path: app/build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
