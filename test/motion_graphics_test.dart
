@@ -1,3 +1,4 @@
+
 import 'package:auto_edit/editing_engine.dart';
 import 'package:auto_edit/motion_graphics.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,7 +10,6 @@ void main() {
         content: 'سيرة النبي ومواقف الصحابة والتوكل على الله',
         requestedStyle: 'auto',
       );
-
       final motion = MotionGraphicsPlan.forProfile(profile);
 
       expect(motion.mood, MotionMood.calm);
@@ -29,7 +29,6 @@ void main() {
         content: 'مراجعة منتج جديد وسعره متوفر في المتجر',
         requestedStyle: 'auto',
       );
-
       final motion = MotionGraphicsPlan.forProfile(profile);
 
       expect(motion.mood, MotionMood.dynamic);
@@ -67,10 +66,7 @@ void main() {
       expect(filter, contains('format=rgba'));
       expect(filter, contains('fade=t=in'));
       expect(filter, contains('fade=t=out'));
-      expect(
-        filter,
-        contains('setpts=PTS-STARTPTS+4.500/TB'),
-      );
+      expect(filter, contains('setpts=PTS-STARTPTS+4.500/TB'));
     });
 
     test('B-roll is trimmed and alpha-faded', () {
