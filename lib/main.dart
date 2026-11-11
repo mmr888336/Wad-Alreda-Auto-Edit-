@@ -12,8 +12,10 @@ import 'app_localizations.dart';
 import 'enhancer.dart';
 import 'language_page.dart';
 import 'languages.dart';
+import 'projects_page.dart';
 import 'settings.dart';
 import 'silence_cutter.dart';
+import 'timeline_page.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -192,6 +194,7 @@ class WelcomePage extends StatelessWidget {
     );
   }
 }
+
 class _PipelineOut {
   final CutResult cut;
   final EnhanceResult enhanced;
@@ -343,7 +346,6 @@ class _HomePageState extends State<HomePage> {
 
         return;
       }
-
       setState(() {
         status = AppLocalizations.t('adFinished');
       });
@@ -471,6 +473,7 @@ class _HomePageState extends State<HomePage> {
       setState(() => status = AppLocalizations.t('postCopied'));
     }
   }
+
   @override
   Widget build(BuildContext context) {
     final current = result;
@@ -482,6 +485,19 @@ class _HomePageState extends State<HomePage> {
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
+          IconButton(
+            tooltip: AppLocalizations.isRtl
+                ? 'مكتبة المشاريع'
+                : 'Project library',
+            icon: const Icon(Icons.folder_copy_outlined),
+            onPressed: busy
+                ? null
+                : () => Navigator.of(context).push<void>(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const ProjectsPage(),
+                      ),
+                    ),
+          ),
           IconButton(
             tooltip: AppLocalizations.t('settings'),
             icon: const Icon(Icons.tune_rounded),
@@ -618,6 +634,22 @@ class _HomePageState extends State<HomePage> {
               ),
             ],
             const SizedBox(height: 14),
+            OutlinedButton.icon(
+              onPressed: () => Navigator.of(context).push<void>(
+                MaterialPageRoute<void>(
+                  builder: (_) => TimelinePage(
+                    project: current.timelineProject,
+                  ),
+                ),
+              ),
+              icon: const Icon(Icons.timeline_rounded),
+              label: Text(
+                AppLocalizations.isRtl
+                    ? 'فتح التايم لاين'
+                    : 'Open timeline',
+              ),
+            ),
+            const SizedBox(height: 8),
             FilledButton.icon(
               onPressed: saving ? null : _saveToGallery,
               icon: saving
