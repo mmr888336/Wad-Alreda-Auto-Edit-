@@ -1,0 +1,3 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- No extra permissions are required to create the native Filament engine. -->
+</manifest>
