@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -8,8 +9,28 @@ import 'ai_router.dart';
 import 'app_localizations.dart';
 import 'languages.dart';
 import 'editing_catalog.dart';
+import 'visual_filter_engine.dart';
 
 class AppSettings {
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
+
+  static Future<String> _readSecret(String key) async {
+    try {
+      return await _secureStorage.read(key: key) ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  static Future<void> _writeSecret(String key, String value) async {
+    final cleaned = value.trim();
+    if (cleaned.isEmpty) {
+      await _secureStorage.delete(key: key);
+    } else {
+      await _secureStorage.write(key: key, value: cleaned);
+    }
+  }
+
   String provider;
   String geminiKey;
   String geminiModel;
@@ -48,6 +69,12 @@ class AppSettings {
   String captionPosition;
   String soundEffectStyle;
 
+  // 3D asset-source credentials are stored in Android Keystore-backed storage.
+  String sketchfabToken;
+  String polyHavenApiKey;
+  String objaverseToken;
+  bool online3DAssetsEnabled;
+
   AppSettings({
     this.provider = 'gemini',
     this.geminiKey = '',
@@ -81,11 +108,15 @@ class AppSettings {
     this.brollProvider = 'pexels',
     this.pexelsKey = '',
     this.pixabayKey = '',
-    this.captionStyle = 'classic',
-    this.captionFont = 'Cairo',
+    this.captionStyle = 'auto',
+    this.captionFont = 'auto',
     this.captionAnimation = 'slideUp',
     this.captionPosition = 'bottom',
     this.soundEffectStyle = 'whoosh_soft',
+    this.sketchfabToken = '',
+    this.polyHavenApiKey = '',
+    this.objaverseToken = '',
+    this.online3DAssetsEnabled = true,
   });
 
   String get activeKey => provider == 'gemini' ? geminiKey : mistralKey;
@@ -112,6 +143,32 @@ class AppSettings {
 
   static Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
+    final sketchfabToken = await _readSecret('asset.sketchfab.token');
+    final polyHavenApiKey = await _readSecret('asset.polyhaven.apiKey');
+    final objaverseToken = await _readSecret('asset.objaverse.hfToken');
+
+    final storedCaptionStyle = prefs.getString('captionStyle') ?? 'auto';
+    final supportedCaptionStyles = <String>{
+      'auto', 'classic', 'cinematic', 'bold_center', 'boxed', 'outline', 'neon',
+    };
+    final normalizedCaptionStyle = switch (storedCaptionStyle) {
+      'shadow' => 'boxed',
+      'minimal' => 'classic',
+      _ => supportedCaptionStyles.contains(storedCaptionStyle)
+          ? storedCaptionStyle
+          : 'auto',
+    };
+
+    final storedCaptionFont = prefs.getString('captionFont') ?? 'auto';
+    final normalizedCaptionFont = EditingCatalog.captionFonts.containsKey(storedCaptionFont)
+        ? storedCaptionFont
+        : 'auto';
+
+    final storedVisualStyle = prefs.getString('visualStyle') ?? 'auto';
+    final normalizedVisualStyle = <String>{
+      'auto', 'clean', 'cinematic', 'vivid', 'warm', 'cool',
+      'moody', 'vintage', 'mono', 'dreamy',
+    }.contains(storedVisualStyle) ? storedVisualStyle : 'auto';
 
     return AppSettings(
       provider: prefs.getString('provider') ?? 'gemini',
@@ -123,8 +180,7 @@ class AppSettings {
       mistralKey: prefs.getString('mistralKey') ?? '',
       mistralKey2: prefs.getString('mistralKey2') ?? '',
       mistralKey3: prefs.getString('mistralKey3') ?? '',
-      mistralModel:
-          prefs.getString('mistralModel') ?? 'mistral-small-latest',
+      mistralModel: prefs.getString('mistralModel') ?? 'mistral-small-latest',
       groqKey: prefs.getString('groqKey') ?? '',
       groqKey2: prefs.getString('groqKey2') ?? '',
       groqKey3: prefs.getString('groqKey3') ?? '',
@@ -137,7 +193,7 @@ class AppSettings {
       sfx: prefs.getBool('sfx') ?? true,
       enhanceAudio: prefs.getBool('enhanceAudio') ?? true,
       visualEffects: prefs.getBool('visualEffects') ?? true,
-      visualStyle: prefs.getString('visualStyle') ?? 'auto',
+      visualStyle: normalizedVisualStyle,
       punchZoom: prefs.getBool('punchZoom') ?? true,
       flashTransitions: prefs.getBool('flashTransitions') ?? true,
       progressBar: prefs.getBool('progressBar') ?? true,
@@ -147,12 +203,15 @@ class AppSettings {
       brollProvider: prefs.getString('brollProvider') ?? 'pexels',
       pexelsKey: prefs.getString('pexelsKey') ?? '',
       pixabayKey: prefs.getString('pixabayKey') ?? '',
-      captionStyle: prefs.getString('captionStyle') ?? 'classic',
-      captionFont: prefs.getString('captionFont') ?? 'Cairo',
+      captionStyle: normalizedCaptionStyle,
+      captionFont: normalizedCaptionFont,
       captionAnimation: prefs.getString('captionAnimation') ?? 'slideUp',
       captionPosition: prefs.getString('captionPosition') ?? 'bottom',
-      soundEffectStyle:
-          prefs.getString('soundEffectStyle') ?? 'whoosh_soft',
+      soundEffectStyle: prefs.getString('soundEffectStyle') ?? 'whoosh_soft',
+      sketchfabToken: sketchfabToken,
+      polyHavenApiKey: polyHavenApiKey,
+      objaverseToken: objaverseToken,
+      online3DAssetsEnabled: prefs.getBool('online3DAssetsEnabled') ?? true,
     );
   }
 
@@ -196,6 +255,12 @@ class AppSettings {
     await prefs.setString('captionAnimation', captionAnimation);
     await prefs.setString('captionPosition', captionPosition);
     await prefs.setString('soundEffectStyle', soundEffectStyle);
+    await prefs.setBool('online3DAssetsEnabled', online3DAssetsEnabled);
+
+    // Credentials are kept out of SharedPreferences and stored securely.
+    await _writeSecret('asset.sketchfab.token', sketchfabToken);
+    await _writeSecret('asset.polyhaven.apiKey', polyHavenApiKey);
+    await _writeSecret('asset.objaverse.hfToken', objaverseToken);
   }
 }
 
@@ -203,10 +268,7 @@ class AiService {
   static String _cut(String value) =>
       value.length > 300 ? value.substring(0, 300) : value;
 
-  static Future<String> generate(
-    AppSettings settings,
-    String prompt,
-  ) async {
+  static Future<String> generate(AppSettings settings, String prompt) async {
     if (settings.activeKey.trim().isEmpty) {
       throw Exception('No API key has been configured.');
     }
@@ -223,37 +285,25 @@ class AiService {
         },
         body: jsonEncode({
           'contents': [
-            {
-              'parts': [
-                {'text': prompt}
-              ]
-            }
+            {'parts': [{'text': prompt}]}
           ]
         }),
       );
 
       if (response.statusCode != 200) {
-        throw Exception(
-          'Gemini ${response.statusCode}: ${_cut(response.body)}',
-        );
+        throw Exception('Gemini ${response.statusCode}: ${_cut(response.body)}');
       }
 
-      final json =
-          jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      final json = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final candidates = json['candidates'] as List?;
-
       if (candidates == null || candidates.isEmpty) {
         throw Exception('Gemini returned no text.');
       }
-
-      final content =
-          candidates.first['content'] as Map<String, dynamic>?;
+      final content = candidates.first['content'] as Map<String, dynamic>?;
       final parts = content?['parts'] as List?;
-
       if (parts == null || parts.isEmpty) {
         throw Exception('Gemini response contains no text.');
       }
-
       return parts.first['text'] as String;
     }
 
@@ -265,26 +315,17 @@ class AiService {
       },
       body: jsonEncode({
         'model': settings.mistralModel,
-        'messages': [
-          {'role': 'user', 'content': prompt}
-        ],
+        'messages': [{'role': 'user', 'content': prompt}],
       }),
     );
-
     if (response.statusCode != 200) {
-      throw Exception(
-        'Mistral ${response.statusCode}: ${_cut(response.body)}',
-      );
+      throw Exception('Mistral ${response.statusCode}: ${_cut(response.body)}');
     }
-
-    final json =
-        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    final json = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
     final choices = json['choices'] as List?;
-
     if (choices == null || choices.isEmpty) {
       throw Exception('Mistral returned no text.');
     }
-
     return choices.first['message']['content'] as String;
   }
 }
@@ -303,18 +344,18 @@ class _SettingsPageState extends State<SettingsPage> {
   final geminiModel = TextEditingController();
   final geminiKey2 = TextEditingController();
   final geminiKey3 = TextEditingController();
-
   final mistralKey = TextEditingController();
   final mistralKey2 = TextEditingController();
   final mistralKey3 = TextEditingController();
   final mistralModel = TextEditingController();
-
   final groqKey = TextEditingController();
   final groqKey2 = TextEditingController();
   final groqKey3 = TextEditingController();
-
   final pexelsKey = TextEditingController();
   final pixabayKey = TextEditingController();
+  final sketchfabToken = TextEditingController();
+  final polyHavenApiKey = TextEditingController();
+  final objaverseToken = TextEditingController();
 
   String testResult = '';
   bool testing = false;
@@ -322,29 +363,26 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
-
     AppSettings.load().then((value) {
       if (!mounted) return;
-
       setState(() {
         settings = value;
-
         geminiKey.text = value.geminiKey;
         geminiModel.text = value.geminiModel;
         geminiKey2.text = value.geminiKey2;
         geminiKey3.text = value.geminiKey3;
-
         mistralKey.text = value.mistralKey;
         mistralKey2.text = value.mistralKey2;
         mistralKey3.text = value.mistralKey3;
         mistralModel.text = value.mistralModel;
-
         groqKey.text = value.groqKey;
         groqKey2.text = value.groqKey2;
         groqKey3.text = value.groqKey3;
-
         pexelsKey.text = value.pexelsKey;
         pixabayKey.text = value.pixabayKey;
+        sketchfabToken.text = value.sketchfabToken;
+        polyHavenApiKey.text = value.polyHavenApiKey;
+        objaverseToken.text = value.objaverseToken;
       });
     });
   }
@@ -355,69 +393,57 @@ class _SettingsPageState extends State<SettingsPage> {
     geminiModel.dispose();
     geminiKey2.dispose();
     geminiKey3.dispose();
-
     mistralKey.dispose();
     mistralKey2.dispose();
     mistralKey3.dispose();
     mistralModel.dispose();
-
     groqKey.dispose();
     groqKey2.dispose();
     groqKey3.dispose();
-
     pexelsKey.dispose();
     pixabayKey.dispose();
-
+    sketchfabToken.dispose();
+    polyHavenApiKey.dispose();
+    objaverseToken.dispose();
     super.dispose();
   }
 
   void _apply() {
     final current = settings!;
-
     current.geminiKey = geminiKey.text;
     current.geminiModel = geminiModel.text;
     current.geminiKey2 = geminiKey2.text;
     current.geminiKey3 = geminiKey3.text;
-
     current.mistralKey = mistralKey.text;
     current.mistralKey2 = mistralKey2.text;
     current.mistralKey3 = mistralKey3.text;
     current.mistralModel = mistralModel.text;
-
     current.groqKey = groqKey.text;
     current.groqKey2 = groqKey2.text;
     current.groqKey3 = groqKey3.text;
-
     current.pexelsKey = pexelsKey.text;
     current.pixabayKey = pixabayKey.text;
+    current.sketchfabToken = sketchfabToken.text;
+    current.polyHavenApiKey = polyHavenApiKey.text;
+    current.objaverseToken = objaverseToken.text;
   }
 
   Future<void> _test() async {
     _apply();
-
     setState(() {
       testing = true;
       testResult = '';
     });
-
     try {
       await settings!.save();
-
       final lines = await AiRouter.testAll(settings!);
-
       if (mounted) {
-        setState(() {
-          testResult = '${lines.join('\n')}\n(Keys saved)';
-        });
+        setState(() => testResult = '${lines.join('\n')}\n(Keys saved securely)');
       }
     } catch (e) {
-      if (mounted) {
-        setState(() => testResult = 'Failed ❌ ${e}');
-      }
+      if (mounted) setState(() => testResult = 'Failed ❌ $e');
     } finally {
-      if (mounted) {
-        setState(() => testing = false);
-      }
+      if (mounted) setState(() => testing = false);
     }
   }
 
@@ -431,6 +457,8 @@ class _SettingsPageState extends State<SettingsPage> {
       child: TextField(
         controller: controller,
         obscureText: secret,
+        autocorrect: false,
+        enableSuggestions: !secret,
         decoration: InputDecoration(
           labelText: label,
           border: const OutlineInputBorder(),
@@ -438,32 +466,29 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
     );
   }
-    @override
+
+  Widget _sectionTitle(String title) => Padding(
+        padding: const EdgeInsets.only(top: 6, bottom: 8),
+        child: Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+        ),
+      );
+
+  @override
   Widget build(BuildContext context) {
     final current = settings;
-
     if (current == null) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-
     final country = Languages.byCode(current.country);
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(AppLocalizations.t('settings')),
-      ),
+      appBar: AppBar(title: Text(AppLocalizations.t('settings'))),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text(
-            AppLocalizations.t('countryLanguage'),
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 17,
-            ),
-          ),
+          _sectionTitle(AppLocalizations.t('countryLanguage')),
           const SizedBox(height: 6),
           DropdownButtonFormField<String>(
             value: current.country,
@@ -474,110 +499,44 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             items: [
               for (final c in Languages.countries)
-                DropdownMenuItem(
-                  value: c.code,
-                  child: Text(c.name),
-                ),
+                DropdownMenuItem(value: c.code, child: Text(c.name)),
             ],
             onChanged: (value) {
               if (value == null) return;
-
-              setState(() {
-                current.country = value;
-              });
-
-              AppLocalizations.setLanguage(
-                Languages.byCode(value).lang,
-              );
+              setState(() => current.country = value);
+              AppLocalizations.setLanguage(Languages.byCode(value).lang);
             },
           ),
           Padding(
             padding: const EdgeInsets.only(top: 6, bottom: 4),
             child: Text(
               '${AppLocalizations.t('captionLanguage')}: ${country.name}',
-              style: const TextStyle(
-                fontSize: 12,
-                color: Colors.white70,
-              ),
+              style: const TextStyle(fontSize: 12, color: Colors.white70),
             ),
           ),
           const Divider(height: 32),
-          Text(
-            AppLocalizations.t('aiProviders'),
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 17,
-            ),
-          ),
-          const SizedBox(height: 6),
+          _sectionTitle(AppLocalizations.t('aiProviders')),
           Text(
             AppLocalizations.t('aiDesc'),
-            style: const TextStyle(
-              fontSize: 12,
-              color: Colors.white70,
-            ),
+            style: const TextStyle(fontSize: 12, color: Colors.white70),
           ),
           const SizedBox(height: 10),
-          _field(
-            geminiKey,
-            AppLocalizations.t('geminiKey'),
-            secret: true,
-          ),
-          _field(
-            geminiModel,
-            AppLocalizations.t('geminiModel'),
-          ),
-          _field(
-            geminiKey2,
-            AppLocalizations.t('geminiKey2'),
-            secret: true,
-          ),
-          _field(
-            geminiKey3,
-            AppLocalizations.t('geminiKey3'),
-            secret: true,
-          ),
-          _field(
-            groqKey,
-            AppLocalizations.t('groqKey'),
-            secret: true,
-          ),
-          _field(
-            groqKey2,
-            AppLocalizations.t('groqKey2'),
-            secret: true,
-          ),
-          _field(
-            groqKey3,
-            AppLocalizations.t('groqKey3'),
-            secret: true,
-          ),
-          _field(
-            mistralKey,
-            AppLocalizations.t('mistralKey'),
-            secret: true,
-          ),
-          _field(
-            mistralKey2,
-            AppLocalizations.t('mistralKey2'),
-            secret: true,
-          ),
-          _field(
-            mistralKey3,
-            AppLocalizations.t('mistralKey3'),
-            secret: true,
-          ),
-          _field(
-            mistralModel,
-            AppLocalizations.t('mistralModel'),
-          ),
+          _field(geminiKey, AppLocalizations.t('geminiKey'), secret: true),
+          _field(geminiModel, AppLocalizations.t('geminiModel')),
+          _field(geminiKey2, AppLocalizations.t('geminiKey2'), secret: true),
+          _field(geminiKey3, AppLocalizations.t('geminiKey3'), secret: true),
+          _field(groqKey, AppLocalizations.t('groqKey'), secret: true),
+          _field(groqKey2, AppLocalizations.t('groqKey2'), secret: true),
+          _field(groqKey3, AppLocalizations.t('groqKey3'), secret: true),
+          _field(mistralKey, AppLocalizations.t('mistralKey'), secret: true),
+          _field(mistralKey2, AppLocalizations.t('mistralKey2'), secret: true),
+          _field(mistralKey3, AppLocalizations.t('mistralKey3'), secret: true),
+          _field(mistralModel, AppLocalizations.t('mistralModel')),
           FilledButton.tonal(
             onPressed: testing ? null : _test,
-            child: Text(
-              testing
-                  ? AppLocalizations.t('testing')
-                  : AppLocalizations.t('saveTestKeys'),
-            ),
+            child: Text(testing
+                ? AppLocalizations.t('testing')
+                : AppLocalizations.t('saveTestKeys')),
           ),
           if (testResult.isNotEmpty)
             Padding(
@@ -585,104 +544,93 @@ class _SettingsPageState extends State<SettingsPage> {
               child: SelectableText(testResult),
             ),
           const Divider(height: 32),
-          Text(
-            AppLocalizations.t('editingFeatures'),
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 17,
-            ),
+          _sectionTitle('3D Asset Sources — مصادر المجسمات ثلاثية الأبعاد'),
+          const Text(
+            'أدخل مفاتيح المصادر هنا. بعض المكتبات العامة قد تعمل بدون مفتاح؛ '
+            'أما Objaverse فيستخدم رمز Hugging Face اختيارياً لبعض عمليات الوصول.',
+            style: TextStyle(fontSize: 12, color: Colors.white70),
           ),
+          const SizedBox(height: 10),
+          _field(sketchfabToken, 'Sketchfab API Token', secret: true),
+          _field(polyHavenApiKey, 'Poly Haven API Key (اختياري)', secret: true),
+          _field(objaverseToken, 'Hugging Face Token / Objaverse (اختياري)', secret: true),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Prefer online 3D assets'),
+            subtitle: const Text(
+              'تفضيل البحث في المصادر المتصلة، مع الرجوع للمكتبة المحلية عند عدم توفر أصل مناسب. سيتم تفعيل التنزيل في مرحلة ربط المصادر.',
+              style: TextStyle(fontSize: 12),
+            ),
+            value: current.online3DAssetsEnabled,
+            onChanged: (value) => setState(() => current.online3DAssetsEnabled = value),
+          ),
+          const Divider(height: 32),
+          _sectionTitle(AppLocalizations.t('editingFeatures')),
           SwitchListTile(
             title: Text(AppLocalizations.t('audioEnhance')),
             subtitle: Text(AppLocalizations.t('audioEnhanceDesc')),
             value: current.enhanceAudio,
-            onChanged: (value) {
-              setState(() => current.enhanceAudio = value);
-            },
+            onChanged: (value) => setState(() => current.enhanceAudio = value),
           ),
           SwitchListTile(
             title: Text(AppLocalizations.t('visualEffects')),
             subtitle: Text(AppLocalizations.t('visualEffectsDesc')),
             value: current.visualEffects,
-            onChanged: (value) {
-              setState(() => current.visualEffects = value);
-            },
+            onChanged: (value) => setState(() => current.visualEffects = value),
           ),
           if (current.visualEffects) ...[
             Padding(
-              padding: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.only(top: 6, bottom: 8),
               child: Text(AppLocalizations.t('colorStyle')),
             ),
-            RadioListTile<String>(
-              title: const Text('Auto — تلقائي حسب موضوع الفيديو'),
-              subtitle: const Text(
-                'يختار المحرك الألوان والإيقاع والمؤثرات المناسبة لمحتوى الفيديو.',
-              ),
-              value: 'auto',
-              groupValue: current.visualStyle,
-              onChanged: (value) {
-                if (value == null) return;
-                setState(() => current.visualStyle = value);
-              },
-            ),
-            RadioListTile<String>(
-              title: Text(AppLocalizations.t('clean')),
-              value: 'clean',
-              groupValue: current.visualStyle,
-              onChanged: (value) {
-                if (value == null) return;
-                setState(() => current.visualStyle = value);
-              },
-            ),
-            RadioListTile<String>(
-              title: Text(AppLocalizations.t('cinematic')),
-              value: 'cinematic',
-              groupValue: current.visualStyle,
-              onChanged: (value) {
-                if (value == null) return;
-                setState(() => current.visualStyle = value);
-              },
-            ),
-            RadioListTile<String>(
-              title: Text(AppLocalizations.t('vivid')),
-              value: 'vivid',
-              groupValue: current.visualStyle,
-              onChanged: (value) {
-                if (value == null) return;
-                setState(() => current.visualStyle = value);
-              },
+            GridView.count(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              crossAxisCount: 2,
+              crossAxisSpacing: 9,
+              mainAxisSpacing: 9,
+              childAspectRatio: 0.98,
+              children: [
+                VisualFilterChoiceCard(
+                  id: 'auto',
+                  title: 'Auto',
+                  description: 'حسب موضوع الفيديو',
+                  selected: current.visualStyle == 'auto',
+                  onTap: () => setState(() => current.visualStyle = 'auto'),
+                ),
+                for (final preset in VisualFilterEngine.presets)
+                  VisualFilterChoiceCard(
+                    id: preset.id,
+                    title: preset.title,
+                    description: preset.description,
+                    selected: current.visualStyle == preset.id,
+                    onTap: () => setState(() => current.visualStyle = preset.id),
+                  ),
+              ],
             ),
             SwitchListTile(
               title: Text(AppLocalizations.t('punchZoom')),
               subtitle: Text(AppLocalizations.t('punchZoomDesc')),
               value: current.punchZoom,
-              onChanged: (value) {
-                setState(() => current.punchZoom = value);
-              },
+              onChanged: (value) => setState(() => current.punchZoom = value),
             ),
             SwitchListTile(
               title: Text(AppLocalizations.t('flashTransitions')),
               value: current.flashTransitions,
-              onChanged: (value) {
-                setState(() => current.flashTransitions = value);
-              },
+              onChanged: (value) => setState(() => current.flashTransitions = value),
             ),
             SwitchListTile(
               title: Text(AppLocalizations.t('progressBar')),
               subtitle: Text(AppLocalizations.t('progressBarDesc')),
               value: current.progressBar,
-              onChanged: (value) {
-                setState(() => current.progressBar = value);
-              },
+              onChanged: (value) => setState(() => current.progressBar = value),
             ),
           ],
           SwitchListTile(
             title: Text(AppLocalizations.t('captions')),
             subtitle: Text(AppLocalizations.t('captionsDesc')),
             value: current.captions,
-            onChanged: (value) {
-              setState(() => current.captions = value);
-            },
+            onChanged: (value) => setState(() => current.captions = value),
           ),
           if (current.captions) ...[
             const SizedBox(height: 8),
@@ -695,14 +643,10 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               items: [
                 for (final entry in EditingCatalog.captionStyles.entries)
-                  DropdownMenuItem<String>(
-                    value: entry.key,
-                    child: Text(entry.value),
-                  ),
+                  DropdownMenuItem(value: entry.key, child: Text(entry.value)),
               ],
               onChanged: (value) {
-                if (value == null) return;
-                setState(() => current.captionStyle = value);
+                if (value != null) setState(() => current.captionStyle = value);
               },
             ),
             const SizedBox(height: 12),
@@ -715,14 +659,10 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               items: [
                 for (final entry in EditingCatalog.captionFonts.entries)
-                  DropdownMenuItem<String>(
-                    value: entry.key,
-                    child: Text(entry.value),
-                  ),
+                  DropdownMenuItem(value: entry.key, child: Text(entry.value)),
               ],
               onChanged: (value) {
-                if (value == null) return;
-                setState(() => current.captionFont = value);
+                if (value != null) setState(() => current.captionFont = value);
               },
             ),
             const SizedBox(height: 12),
@@ -735,14 +675,10 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               items: [
                 for (final entry in EditingCatalog.captionAnimations.entries)
-                  DropdownMenuItem<String>(
-                    value: entry.key,
-                    child: Text(entry.value),
-                  ),
+                  DropdownMenuItem(value: entry.key, child: Text(entry.value)),
               ],
               onChanged: (value) {
-                if (value == null) return;
-                setState(() => current.captionAnimation = value);
+                if (value != null) setState(() => current.captionAnimation = value);
               },
             ),
             const SizedBox(height: 12),
@@ -755,38 +691,28 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               items: [
                 for (final entry in EditingCatalog.captionPositions.entries)
-                  DropdownMenuItem<String>(
-                    value: entry.key,
-                    child: Text(entry.value),
-                  ),
+                  DropdownMenuItem(value: entry.key, child: Text(entry.value)),
               ],
               onChanged: (value) {
-                if (value == null) return;
-                setState(() => current.captionPosition = value);
+                if (value != null) setState(() => current.captionPosition = value);
               },
             ),
           ],
           SwitchListTile(
             title: Text(AppLocalizations.t('hook')),
             value: current.hook,
-            onChanged: (value) {
-              setState(() => current.hook = value);
-            },
+            onChanged: (value) => setState(() => current.hook = value),
           ),
           SwitchListTile(
             title: Text(AppLocalizations.t('broll')),
             subtitle: Text(AppLocalizations.t('brollDesc')),
             value: current.broll,
-            onChanged: (value) {
-              setState(() => current.broll = value);
-            },
+            onChanged: (value) => setState(() => current.broll = value),
           ),
           SwitchListTile(
             title: Text(AppLocalizations.t('sfx')),
             value: current.sfx,
-            onChanged: (value) {
-              setState(() => current.sfx = value);
-            },
+            onChanged: (value) => setState(() => current.sfx = value),
           ),
           if (current.sfx) ...[
             const SizedBox(height: 8),
@@ -799,14 +725,10 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               items: [
                 for (final entry in EditingCatalog.soundEffects.entries)
-                  DropdownMenuItem<String>(
-                    value: entry.key,
-                    child: Text(entry.value),
-                  ),
+                  DropdownMenuItem(value: entry.key, child: Text(entry.value)),
               ],
               onChanged: (value) {
-                if (value == null) return;
-                setState(() => current.soundEffectStyle = value);
+                if (value != null) setState(() => current.soundEffectStyle = value);
               },
             ),
           ],
@@ -817,8 +739,7 @@ class _SettingsPageState extends State<SettingsPage> {
             value: 'pexels',
             groupValue: current.brollProvider,
             onChanged: (value) {
-              if (value == null) return;
-              setState(() => current.brollProvider = value);
+              if (value != null) setState(() => current.brollProvider = value);
             },
           ),
           RadioListTile<String>(
@@ -826,35 +747,18 @@ class _SettingsPageState extends State<SettingsPage> {
             value: 'pixabay',
             groupValue: current.brollProvider,
             onChanged: (value) {
-              if (value == null) return;
-              setState(() => current.brollProvider = value);
+              if (value != null) setState(() => current.brollProvider = value);
             },
           ),
-          _field(
-            pexelsKey,
-            AppLocalizations.t('pexelsKey'),
-            secret: true,
-          ),
-          _field(
-            pixabayKey,
-            AppLocalizations.t('pixabayKey'),
-            secret: true,
-          ),
+          _field(pexelsKey, AppLocalizations.t('pexelsKey'), secret: true),
+          _field(pixabayKey, AppLocalizations.t('pixabayKey'), secret: true),
           const Divider(height: 32),
-          Text(
-            AppLocalizations.t('export'),
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 17,
-            ),
-          ),
+          _sectionTitle(AppLocalizations.t('export')),
           SwitchListTile(
             title: Text(AppLocalizations.t('resolution2k')),
             subtitle: Text(AppLocalizations.t('resolution2kDesc')),
             value: current.upscale2k,
-            onChanged: (value) {
-              setState(() => current.upscale2k = value);
-            },
+            onChanged: (value) => setState(() => current.upscale2k = value),
           ),
           SwitchListTile(
             title: const Text('Maximum export quality'),
@@ -862,77 +766,55 @@ class _SettingsPageState extends State<SettingsPage> {
               'H.264 CRF 17 + slow preset + 192 kb/s audio. Larger files and longer export time.',
             ),
             value: current.maximumQuality,
-            onChanged: (value) {
-              setState(() => current.maximumQuality = value);
-            },
+            onChanged: (value) => setState(() => current.maximumQuality = value),
           ),
           if (!current.maximumQuality) ...[
-            Text(
-              AppLocalizations.t(
-                'targetSize',
-                args: {'size': current.targetMb.toStringAsFixed(0)},
-              ),
-            ),
+            Text(AppLocalizations.t(
+              'targetSize',
+              args: {'size': current.targetMb.toStringAsFixed(0)},
+            )),
             Slider(
               min: 6,
               max: 20,
               divisions: 14,
               value: current.targetMb,
-              onChanged: (value) {
-                setState(() => current.targetMb = value);
-              },
+              onChanged: (value) => setState(() => current.targetMb = value),
             ),
           ],
           const Divider(height: 32),
-          Text(
-            AppLocalizations.t(
-              'silenceSensitivity',
-              args: {'value': current.noiseDb.toStringAsFixed(0)},
-            ),
-          ),
+          Text(AppLocalizations.t(
+            'silenceSensitivity',
+            args: {'value': current.noiseDb.toStringAsFixed(0)},
+          )),
           Text(
             AppLocalizations.t('silenceDesc'),
-            style: const TextStyle(
-              fontSize: 12,
-              color: Colors.white70,
-            ),
+            style: const TextStyle(fontSize: 12, color: Colors.white70),
           ),
           Slider(
             min: -50,
             max: -15,
             divisions: 35,
             value: current.noiseDb,
-            onChanged: (value) {
-              setState(() => current.noiseDb = value);
-            },
+            onChanged: (value) => setState(() => current.noiseDb = value),
           ),
-          Text(
-            AppLocalizations.t(
-              'minimumSilence',
-              args: {'value': current.minSilence.toStringAsFixed(1)},
-            ),
-          ),
+          Text(AppLocalizations.t(
+            'minimumSilence',
+            args: {'value': current.minSilence.toStringAsFixed(1)},
+          )),
           Slider(
             min: 0.3,
             max: 1.5,
             divisions: 12,
             value: current.minSilence,
-            onChanged: (value) {
-              setState(() => current.minSilence = value);
-            },
+            onChanged: (value) => setState(() => current.minSilence = value),
           ),
           const SizedBox(height: 18),
           FilledButton(
             onPressed: () async {
               _apply();
               await current.save();
-
               if (!context.mounted) return;
-
-              AppLocalizations.setLanguage(
-                Languages.byCode(current.country).lang,
-              );
-
+              AppLocalizations.setLanguage(Languages.byCode(current.country).lang);
               Navigator.pop(context);
             },
             child: Text(AppLocalizations.t('saveSettings')),

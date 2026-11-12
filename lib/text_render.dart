@@ -4,9 +4,12 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-/// Renders captions as transparent PNG images for FFmpeg overlays.
+import 'caption_style_engine.dart';
+
+/// Renders transparent PNG captions with a cached, project-stable font style.
 class TextRender {
-  /// Detect direction from the first strong script character in the text.
+  static final Map<String, Future<TextStyle>> _fontStyleCache = {};
+
   static TextDirection _directionOf(String text) {
     for (final rune in text.runes) {
       final isRtlLetter =
@@ -37,26 +40,55 @@ class TextRender {
     return TextDirection.ltr;
   }
 
-  /// Loads the selected Google Font. If it cannot be loaded (for example,
-  /// while offline), TextPainter falls back to the platform's default font.
   static Future<TextStyle> _loadFontStyle({
     required String fontFamily,
     required double fontSize,
     required String style,
-  }) async {
-    final weight = style == 'minimal' ? FontWeight.w600 : FontWeight.w900;
-    final base = TextStyle(
-      fontSize: fontSize,
-      fontWeight: weight,
-      height: 1.3,
-      letterSpacing: style == 'cinematic' ? 0.25 : 0,
-    );
-    try {
-      return await GoogleFonts.getFont(fontFamily, textStyle: base);
-    } catch (_) {
-      return base;
-    }
+  }) {
+    final normalizedStyle = CaptionStyleEngine.normalize(style);
+    final key = '$fontFamily|${fontSize.toStringAsFixed(2)}|$normalizedStyle';
+    return _fontStyleCache.putIfAbsent(key, () async {
+      final weight = normalizedStyle == 'classic'
+          ? FontWeight.w800
+          : FontWeight.w900;
+      final base = TextStyle(
+        fontFamily: fontFamily,
+        fontSize: fontSize,
+        fontWeight: weight,
+        height: 1.3,
+        letterSpacing: normalizedStyle == 'cinematic' ? 0.25 : 0,
+      );
+      try {
+        final loaded = GoogleFonts.getFont(fontFamily, textStyle: base);
+        // Wait for pending font downloads once, rather than allowing each
+        // caption image to race between downloaded and fallback typefaces.
+        await GoogleFonts.pendingFonts().timeout(const Duration(seconds: 8));
+        return loaded;
+      } catch (_) {
+        // Cache the same fallback for every caption in this export.
+        return base;
+      }
+    });
   }
+
+  /// Call once before rendering a batch of captions. The cached result is
+  /// reused by every subsequent caption PNG with the same style/font size.
+  static Future<void> prepareFont({
+    required String fontFamily,
+    required double fontSize,
+    required String style,
+  }) async {
+    await _loadFontStyle(
+      fontFamily: fontFamily,
+      fontSize: fontSize,
+      style: style,
+    );
+  }
+
+  static String resolveFontFamily({
+    required String requestedFont,
+    required String language,
+  }) => CaptionStyleEngine.fontForLanguage(requestedFont, language);
 
   static Future<String> png({
     required String text,
@@ -69,30 +101,35 @@ class TextRender {
     String style = 'classic',
     String fontFamily = 'Cairo',
   }) async {
+    final stableStyle = CaptionStyleEngine.normalize(style);
     final direction = _directionOf(text);
     final maxW = width * 0.9;
     final effectiveFontSize = fontSize *
-        ((style == 'minimal') ? 0.90 : (style == 'bold_center' ? 1.08 : 1.0));
+        ((stableStyle == 'bold_center') ? 1.08 : 1.0);
     final pad = effectiveFontSize * 0.35;
-    final strokeW = style == 'minimal'
-        ? 0.0
-        : (style == 'bold_center' ? effectiveFontSize * 0.25 : effectiveFontSize * 0.16);
-    final hasBox = box || style == 'boxed';
+    final strokeW = switch (stableStyle) {
+      'bold_center' => effectiveFontSize * 0.25,
+      'outline' => effectiveFontSize * 0.09,
+      _ => effectiveFontSize * 0.16,
+    };
+    final hasBox = box || stableStyle == 'boxed';
 
     final baseStyle = await _loadFontStyle(
       fontFamily: fontFamily,
       fontSize: effectiveFontSize,
-      style: style,
+      style: stableStyle,
     );
 
-    final effectiveFill = switch (style) {
+    final effectiveFill = switch (stableStyle) {
       'neon' => const Color(0xFF8BFFF2),
       'cinematic' => const Color(0xFFFFE3B0),
       'bold_center' => const Color(0xFFFFE082),
       _ => fill,
     };
 
-    final backColor = style == 'neon' ? const Color(0xFF5B27FF) : stroke;
+    final backColor = stableStyle == 'neon'
+        ? const Color(0xFF5B27FF)
+        : stroke;
     TextPainter build(TextStyle textStyle) => TextPainter(
           text: TextSpan(text: text, style: textStyle),
           textDirection: direction,
@@ -111,24 +148,36 @@ class TextRender {
     );
 
     final List<Shadow> shadows;
-    if (style == 'neon') {
-      shadows = [
-        Shadow(color: const Color(0xFF00D9FF), blurRadius: effectiveFontSize * 0.25),
-        Shadow(color: const Color(0xFF8B5CF6), blurRadius: effectiveFontSize * 0.40),
-      ];
-    } else if (style == 'shadow') {
+    if (stableStyle == 'neon') {
       shadows = [
         Shadow(
-          color: Colors.black.withValues(alpha: 0.95),
-          blurRadius: effectiveFontSize * 0.20,
-          offset: Offset(effectiveFontSize * 0.04, effectiveFontSize * 0.06),
+          color: const Color(0xFF00D9FF),
+          blurRadius: effectiveFontSize * 0.25,
+        ),
+        Shadow(
+          color: const Color(0xFF8B5CF6),
+          blurRadius: effectiveFontSize * 0.40,
+        ),
+      ];
+    } else if (stableStyle == 'cinematic') {
+      shadows = [
+        Shadow(
+          color: Colors.black.withOpacity(0.92),
+          blurRadius: effectiveFontSize * 0.18,
+          offset: Offset(effectiveFontSize * 0.03, effectiveFontSize * 0.05),
         ),
       ];
     } else {
-      shadows = const <Shadow>[];
+      shadows = [
+        Shadow(
+          color: Colors.black.withOpacity(0.80),
+          blurRadius: effectiveFontSize * 0.16,
+          offset: Offset(effectiveFontSize * 0.025, effectiveFontSize * 0.04),
+        ),
+      ];
     }
 
-    final TextStyle frontStyle = style == 'outline'
+    final TextStyle frontStyle = stableStyle == 'outline'
         ? baseStyle.copyWith(
             foreground: Paint()
               ..style = PaintingStyle.stroke
@@ -146,9 +195,9 @@ class TextRender {
     final left = (width - maxW) / 2;
 
     if (hasBox) {
-      final boxColor = style == 'cinematic'
+      final boxColor = stableStyle == 'cinematic'
           ? const Color(0xB3221A10)
-          : style == 'neon'
+          : stableStyle == 'neon'
               ? const Color(0xB31B1242)
               : const Color(0xB3000000);
       canvas.drawRRect(
@@ -160,7 +209,7 @@ class TextRender {
       );
     }
 
-    if (style != 'minimal' && style != 'outline') {
+    if (stableStyle != 'outline') {
       back.paint(canvas, Offset(left, pad));
     }
     front.paint(canvas, Offset(left, pad));

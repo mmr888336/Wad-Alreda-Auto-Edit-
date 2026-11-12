@@ -1,5 +1,5 @@
 /// Selectable editing presets for Wad Alreda Studio.
-/// Sound effects are generated from filtered noise, not music tracks.
+/// Sound effects are generated locally; caption styles are script-neutral.
 class EditingCatalog {
   static const captionPositions = <String, String>{
     'middle': 'منتصف الشاشة',
@@ -17,22 +17,21 @@ class EditingCatalog {
     'slideDown': 'دخول من الأعلى',
   };
 
-  /// Visual styles currently implemented by TextRender.
+  /// One automatic mode plus six stable visual identities across languages.
   static const captionStyles = <String, String>{
+    'auto': 'تلقائي حسب موضوع الفيديو',
     'classic': 'كلاسيكي أبيض',
+    'cinematic': 'سينمائي',
     'bold_center': 'عريض بحدود قوية',
     'boxed': 'داخل صندوق',
     'outline': 'حدود فقط',
-    'shadow': 'ظل قوي',
     'neon': 'نيون',
-    'minimal': 'بسيط',
-    'cinematic': 'سينمائي',
   };
 
-  /// Fonts exposed in settings. Google Fonts loads them on demand; an
-  /// offline/system fallback is used if downloading fails.
+  /// Auto selects a script-appropriate font; all listed fonts remain selectable.
   static const captionFonts = <String, String>{
-    'Cairo': 'Cairo — عربي',
+    'auto': 'Auto — حسب لغة الفيديو',
+    'Cairo': 'Cairo — عربي ومتعدد',
     'Tajawal': 'Tajawal — عربي',
     'Noto Sans Arabic': 'Noto Sans Arabic — عربي',
     'Roboto': 'Roboto — متعدد اللغات',
@@ -40,7 +39,6 @@ class EditingCatalog {
     'Lato': 'Lato — متعدد اللغات',
   };
 
-  /// Non-musical sound effect presets generated locally by SoundEffectGenerator.
   static const soundEffects = <String, String>{
     'whoosh_soft': 'وش ناعم',
     'whoosh_fast': 'وش سريع',
@@ -75,7 +73,6 @@ class EditingCatalog {
     'none': 'بدون مؤثر صوتي',
   };
 
-  /// A generic title only; it is not a transcription of the audio.
   static String fallbackHook(String countryCode) {
     switch (countryCode.toUpperCase()) {
       case 'ES':

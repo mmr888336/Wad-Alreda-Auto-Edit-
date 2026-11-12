@@ -1,8 +1,7 @@
 /// Topic-aware editing profiles for Wad Alreda AutoEdit.
 ///
 /// Automatic mode uses local keyword scoring over the AI analysis already
-/// available (title, description, captions and B-roll queries). It makes no
-/// additional network requests and does not upload content.
+/// available (title, description, captions and B-roll queries).
 enum EditTopic {
   religious,
   educational,
@@ -98,6 +97,18 @@ class EditingEngine {
     ),
   };
 
+  static const supportedVisualStyles = <String>{
+    'clean',
+    'cinematic',
+    'vivid',
+    'warm',
+    'cool',
+    'moody',
+    'vintage',
+    'mono',
+    'dreamy',
+  };
+
   static String _normalize(String value) {
     return value
         .toLowerCase()
@@ -115,14 +126,13 @@ class EditingEngine {
     return score;
   }
 
-  /// Manual Clean/Cinematic/Vivid selections always override automatic mode.
+  /// Manual local filters always override automatic topic selection.
   static EditingProfile select({
     required String content,
     required String requestedStyle,
   }) {
     if (requestedStyle != 'auto') {
-      final style = const <String>{'clean', 'cinematic', 'vivid'}
-              .contains(requestedStyle)
+      final style = supportedVisualStyles.contains(requestedStyle)
           ? requestedStyle
           : 'cinematic';
       return EditingProfile(
@@ -139,49 +149,34 @@ class EditingEngine {
 
     final text = _normalize(content);
     final scores = <MapEntry<EditTopic, int>>[
-      MapEntry(
-        EditTopic.religious,
-        _score(text, const [
-          'اسلام', 'إسلام', 'ديني', 'القران', 'قران', 'حديث', 'الصلاة',
-          'صلاة', 'النبي', 'الرسول', 'سيرة', 'سيره', 'الصحابة',
-          'الصحابه', 'الله', 'توكل', 'رزق', 'ذنب', 'توبة', 'توبه',
-          'الجنة', 'الجنه', 'النار', 'عبادة', 'عباده', 'إيمان', 'ايمان',
-        ]),
-      ),
-      MapEntry(
-        EditTopic.educational,
-        _score(text, const [
-          'تعليم', 'شرح', 'درس', 'معلومة', 'معلومه', 'دراسة', 'دراسه',
-          'جامعة', 'جامعه', 'طالب', 'فسيولوجي', 'طب', 'طبي', 'كورس',
-          'tutorial', 'explain', 'lesson', 'education', 'study', 'science',
-          'medical',
-        ]),
-      ),
-      MapEntry(
-        EditTopic.product,
-        _score(text, const [
-          'منتج', 'شراء', 'متجر', 'سعر', 'عرض', 'متوفر', 'مايك',
-          'مايكروفون', 'سماعة', 'سماعه', 'هاتف', 'جهاز', 'تسوق',
-          'product', 'review', 'unboxing', 'buy', 'shop', 'sale',
-          'gadget', 'microphone', 'smart', 'phone', 'laptop',
-        ]),
-      ),
-      MapEntry(
-        EditTopic.storytelling,
-        _score(text, const [
-          'قصة', 'قصه', 'حكاية', 'حكايه', 'تجربة', 'تجربه', 'موقف',
-          'رحلة شخصية', 'حدث', 'يوم', 'story', 'journey', 'personal',
-          'experience', 'documentary',
-        ]),
-      ),
-      MapEntry(
-        EditTopic.travel,
-        _score(text, const [
-          'سفر', 'سياحة', 'سياحه', 'مكان', 'مدينة', 'مدينه', 'بلد',
-          'طبيعة', 'طبيعه', 'مناظر', 'travel', 'tourism', 'city',
-          'nature', 'landscape', 'beach', 'mountain',
-        ]),
-      ),
+      MapEntry(EditTopic.religious, _score(text, const [
+        'اسلام', 'إسلام', 'ديني', 'القران', 'قران', 'حديث', 'الصلاة',
+        'صلاة', 'النبي', 'الرسول', 'سيرة', 'سيره', 'الصحابة',
+        'الصحابه', 'الله', 'توكل', 'رزق', 'ذنب', 'توبة', 'توبه',
+        'الجنة', 'الجنه', 'النار', 'عبادة', 'عباده', 'إيمان', 'ايمان',
+      ])),
+      MapEntry(EditTopic.educational, _score(text, const [
+        'تعليم', 'شرح', 'درس', 'معلومة', 'معلومه', 'دراسة', 'دراسه',
+        'جامعة', 'جامعه', 'طالب', 'فسيولوجي', 'طب', 'طبي', 'كورس',
+        'tutorial', 'explain', 'lesson', 'education', 'study', 'science',
+        'medical',
+      ])),
+      MapEntry(EditTopic.product, _score(text, const [
+        'منتج', 'شراء', 'متجر', 'سعر', 'عرض', 'متوفر', 'مايك',
+        'مايكروفون', 'سماعة', 'سماعه', 'هاتف', 'جهاز', 'تسوق',
+        'product', 'review', 'unboxing', 'buy', 'shop', 'sale',
+        'gadget', 'microphone', 'smart', 'phone', 'laptop',
+      ])),
+      MapEntry(EditTopic.storytelling, _score(text, const [
+        'قصة', 'قصه', 'حكاية', 'حكايه', 'تجربة', 'تجربه', 'موقف',
+        'رحلة شخصية', 'حدث', 'يوم', 'story', 'journey', 'personal',
+        'experience', 'documentary',
+      ])),
+      MapEntry(EditTopic.travel, _score(text, const [
+        'سفر', 'سياحة', 'سياحه', 'مكان', 'مدينة', 'مدينه', 'بلد',
+        'طبيعة', 'طبيعه', 'مناظر', 'travel', 'tourism', 'city',
+        'nature', 'landscape', 'beach', 'mountain',
+      ])),
     ];
 
     var bestTopic = EditTopic.general;
