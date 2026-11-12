@@ -3,10 +3,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import 'project_store.dart';
-import 'timeline_page.dart';
+import 'timeline_preview_page.dart';
 
-/// Project library screen. It is intentionally independent from main.dart so
-/// navigation can be connected once the Studio entry points are consolidated.
+/// Project library screen. Opening a saved project now starts in the Studio
+/// preview, while the preview itself keeps access to detailed layer inspection.
 class ProjectsPage extends StatefulWidget {
   final ProjectStore store;
   final ValueChanged<SavedProject>? onProjectOpened;
@@ -73,8 +73,9 @@ class _ProjectsPageState extends State<ProjectsPage> {
 
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
-          builder: (_) => TimelinePage(
+          builder: (_) => TimelinePreviewPage(
             project: latest.timelineProject,
+            videoPath: latest.videoPath,
           ),
         ),
       );
@@ -197,8 +198,8 @@ class _ProjectsPageState extends State<ProjectsPage> {
                             const SizedBox(height: 10),
                         itemBuilder: (context, index) {
                           final project = _projects[index];
-                          final duration =
-                              project.timelineProject.duration.toStringAsFixed(1);
+                          final duration = project.timelineProject.duration
+                              .toStringAsFixed(1);
                           final hasCover = project.coverPath != null &&
                               File(project.coverPath!).existsSync();
 
@@ -249,24 +250,24 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                       size: 20,
                                     )
                                   : PopupMenuButton<String>(
-                                onSelected: (value) {
-                                  if (value == 'rename') {
-                                    _rename(project);
-                                  } else if (value == 'delete') {
-                                    _delete(project);
-                                  }
-                                },
-                                itemBuilder: (_) => const [
-                                  PopupMenuItem(
-                                    value: 'rename',
-                                    child: Text('إعادة تسمية'),
-                                  ),
-                                  PopupMenuItem(
-                                    value: 'delete',
-                                    child: Text('حذف المشروع'),
-                                  ),
-                                ],
-                              ),
+                                      onSelected: (value) {
+                                        if (value == 'rename') {
+                                          _rename(project);
+                                        } else if (value == 'delete') {
+                                          _delete(project);
+                                        }
+                                      },
+                                      itemBuilder: (_) => const [
+                                        PopupMenuItem(
+                                          value: 'rename',
+                                          child: Text('إعادة تسمية'),
+                                        ),
+                                        PopupMenuItem(
+                                          value: 'delete',
+                                          child: Text('حذف المشروع'),
+                                        ),
+                                      ],
+                                    ),
                             ),
                           );
                         },
