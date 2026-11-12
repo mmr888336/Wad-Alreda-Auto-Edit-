@@ -10,6 +10,7 @@ import 'package:share_plus/share_plus.dart';
 import 'ad_page.dart';
 import 'app_localizations.dart';
 import 'enhancer.dart';
+import 'filament_test_page.dart';
 import 'language_page.dart';
 import 'languages.dart';
 import 'projects_page.dart';
@@ -474,7 +475,8 @@ class _HomePageState extends State<HomePage> {
       setState(() => status = AppLocalizations.t('postCopied'));
     }
   }
-    @override
+
+  @override
   Widget build(BuildContext context) {
     final current = result;
 
@@ -485,6 +487,19 @@ class _HomePageState extends State<HomePage> {
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
+          IconButton(
+            tooltip: AppLocalizations.isRtl
+                ? 'اختبار محرك 3D'
+                : 'Filament 3D test',
+            icon: const Icon(Icons.view_in_ar_rounded),
+            onPressed: busy
+                ? null
+                : () => Navigator.of(context).push<void>(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const FilamentTestPage(),
+                      ),
+                    ),
+          ),
           IconButton(
             tooltip: AppLocalizations.isRtl
                 ? 'مكتبة المشاريع'
