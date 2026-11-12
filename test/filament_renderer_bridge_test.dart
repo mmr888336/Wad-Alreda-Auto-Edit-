@@ -6,7 +6,8 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   const channel = MethodChannel('com.omer.filament_renderer/methods');
-  final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
 
   tearDown(() {
     messenger.setMockMethodCallHandler(channel, null);
@@ -52,5 +53,12 @@ void main() {
 
     await FilamentRenderer.dispose();
     expect(called, isTrue);
+  });
+
+  test('model view type matches the Android plugin registration', () {
+    expect(
+      FilamentRenderer.modelViewType,
+      'com.omer.filament_renderer/model_view',
+    );
   });
 }
