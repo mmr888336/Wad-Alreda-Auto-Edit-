@@ -15,7 +15,7 @@ import 'languages.dart';
 import 'projects_page.dart';
 import 'settings.dart';
 import 'silence_cutter.dart';
-import 'timeline_page.dart';
+import 'timeline_preview_page.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -474,8 +474,7 @@ class _HomePageState extends State<HomePage> {
       setState(() => status = AppLocalizations.t('postCopied'));
     }
   }
-
-  @override
+    @override
   Widget build(BuildContext context) {
     final current = result;
 
@@ -638,8 +637,9 @@ class _HomePageState extends State<HomePage> {
             OutlinedButton.icon(
               onPressed: () => Navigator.of(context).push<void>(
                 MaterialPageRoute<void>(
-                  builder: (_) => TimelinePage(
+                  builder: (_) => TimelinePreviewPage(
                     project: current.timelineProject,
+                    videoPath: current.videoPath,
                   ),
                 ),
               ),
