@@ -1,6 +1,7 @@
 import 'package:auto_edit/project_store.dart';
 import 'package:auto_edit/projects_page.dart';
 import 'package:auto_edit/timeline_engine.dart';
+import 'package:auto_edit/timeline_preview_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -95,6 +96,28 @@ void main() {
     expect(openedProject!.id, project.id);
     expect(openedProject!.timelineProject.layerById('source_video'),
         isNotNull);
+  });
+
+  testWidgets('opens the Studio preview with the saved video and timeline',
+      (tester) async {
+    final project = _sampleSavedProject();
+    final store = _MemoryProjectStore([project]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: ProjectsPage(store: store)),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text(project.name));
+    await tester.pumpAndSettle();
+
+    final previewFinder = find.byType(TimelinePreviewPage);
+    expect(previewFinder, findsOneWidget);
+
+    final preview = tester.widget<TimelinePreviewPage>(previewFinder);
+    expect(preview.videoPath, project.videoPath);
+    expect(preview.project.id, project.timelineProject.id);
+    expect(find.text('PROJECT TIMELINE'), findsOneWidget);
   });
 
   testWidgets('shows the empty state when no projects exist', (tester) async {
