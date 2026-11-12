@@ -42,12 +42,13 @@ jobs:
             --project-name auto_edit \
             app
 
-          rm -rf app/lib app/test
+          rm -rf app/lib app/test app/packages
 
-          mkdir -p app/lib app/test
+          mkdir -p app/lib app/test app/packages
 
           cp -R lib/. app/lib/
           cp -R test/. app/test/
+          cp -R packages/. app/packages/
           cp pubspec.yaml app/pubspec.yaml
 
           test -f app/lib/enhancer.dart
@@ -59,6 +60,10 @@ jobs:
           test -f app/test/motion_graphics_test.dart
           test -f app/test/timeline_engine_test.dart
           test -f app/test/sound_effect_generator_test.dart
+          test -f app/test/filament_renderer_bridge_test.dart
+          test -f app/packages/filament_renderer/pubspec.yaml
+          test -f app/packages/filament_renderer/android/build.gradle
+          test -f app/packages/filament_renderer/android/src/main/kotlin/com/omer/filament_renderer/FilamentRendererPlugin.kt
 
           cat > app/android/app/proguard-rules.pro <<'PROGUARD'
           -keep class androidx.work.** { *; }
@@ -68,10 +73,11 @@ jobs:
           -keep class com.unity3d.** { *; }
           -keep class com.arthenica.ffmpegkit.** { *; }
           -keep class com.antonkarpenko.ffmpegkit.** { *; }
+          -keep class com.google.android.filament.** { *; }
           -dontwarn com.unity3d.**
           PROGUARD
 
-          echo "Android project created."
+          echo "Android project and local Filament plugin copied."
           echo "Release rules restored."
 
       - name: Verify Android build toolchain
@@ -96,8 +102,10 @@ jobs:
           grep -q "layersOfType(TimelineLayerType.broll)" lib/enhancer.dart
           grep -q "required this.timelineProject" lib/enhancer.dart
           grep -q "static double durationFor(String style)" lib/sound_effect_generator.dart
+          grep -q "path: packages/filament_renderer" pubspec.yaml
+          grep -q "FilamentRendererPlugin" packages/filament_renderer/pubspec.yaml
 
-          echo "Phase 3A source integration verified."
+          echo "Phase 3A and Filament bridge source integration verified."
 
       - name: Validate Flutter manifest
         working-directory: app
@@ -117,6 +125,8 @@ jobs:
               "dependencies": r"(?m)^dependencies:\s*$",
               "Flutter SDK": r"(?m)^  flutter:\s*$",
               "Dart SDK": r"(?m)^  sdk:\s*['\"]?>?=?\s*3\.",
+              "local Filament plugin": r"(?m)^  filament_renderer:\s*$",
+              "local plugin path": r"(?m)^    path:\s*packages/filament_renderer\s*$",
           }
 
           for label, pattern in checks.items():
@@ -139,11 +149,11 @@ jobs:
           content = manifest.read_text(encoding="utf-8")
 
           permissions = """
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
-              <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+              <uses-permission android:name=\"android.permission.INTERNET\" />
+              <uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\" android:maxSdkVersion=\"32\" />
+              <uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\" android:maxSdkVersion=\"28\" />
+              <uses-permission android:name=\"android.permission.READ_MEDIA_VIDEO\" />
+              <uses-permission android:name=\"android.permission.READ_MEDIA_IMAGES\" />
           """
 
           if "android.permission.INTERNET" not in content:
@@ -222,7 +232,8 @@ jobs:
         run: |
           dart format \
             lib \
-            test
+            test \
+            packages/filament_renderer/lib
 
       - name: Analyze Dart code
         working-directory: app
@@ -261,7 +272,7 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           name: Wad Alreda AutoEdit build ${{ github.run_number }}
-          body: Android build with source-integrated Phase 3A keyframe timeline engine.
+          body: Android build with source-integrated Phase 3A timeline and the first native Filament bridge.
           files: app/build/app/outputs/flutter-apk/app-release.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
