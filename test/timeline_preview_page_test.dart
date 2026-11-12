@@ -62,13 +62,22 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // Track names (VIDEO and CAPTIONS) are painted directly onto the
-    // CustomPainter canvas, so they are not standalone Text widgets.
     expect(find.byIcon(Icons.movie_outlined), findsOneWidget);
     expect(find.text('VIDEO PREVIEW'), findsOneWidget);
     expect(find.text('PROJECT TIMELINE'), findsOneWidget);
-    expect(find.byType(CustomPaint), findsOneWidget);
     expect(find.text('Open layer and motion details'), findsOneWidget);
+
+    // The timeline canvas has a known size for this 8-second sample project:
+    // width = 104 label + (8 seconds * 68 px) + 24 padding = 672 px
+    // height = 30 px ruler + (2 tracks * 42 px) = 114 px.
+    // Match this exact CustomPaint instead of counting every CustomPaint in
+    // the widget tree (icons and framework controls create additional ones).
+    final timelineCanvas = find.byWidgetPredicate(
+      (widget) =>
+          widget is CustomPaint &&
+          widget.size == const Size(672, 114),
+    );
+    expect(timelineCanvas, findsOneWidget);
   });
 
   testWidgets('shows play controls disabled when no video path is supplied',
