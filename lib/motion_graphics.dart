@@ -1,5 +1,6 @@
 import 'editing_engine.dart';
 import 'motion_camera_engine.dart';
+import 'text_motion_engine.dart';
 
 enum MotionMood { calm, cinematic, dynamic }
 
@@ -78,14 +79,26 @@ class MotionGraphicsPlan {
   String _easeOut(double start, double duration) =>
       'pow(max(0,1-(t-${_n(start)})/${_n(duration)}),3)';
 
-  /// Transparent PNG caption/title input with a depth-aware camera drift.
-  /// Text receives a stronger parallax value than B-roll so the layers do
-  /// not appear to be glued to one flat plane.
+  TextMotionMood get _textMotionMood {
+    switch (mood) {
+      case MotionMood.calm:
+        return TextMotionMood.calm;
+      case MotionMood.cinematic:
+        return TextMotionMood.cinematic;
+      case MotionMood.dynamic:
+        return TextMotionMood.dynamic;
+    }
+  }
+
+  /// Transparent PNG caption/title input with camera drift and its own
+  /// kinetic entrance. Each caption layer gets a deterministic variation
+  /// based on its timeline position, while B-roll keeps a slower camera path.
   String overlayInputFilter({
     required double duration,
     required double timelineStart,
     double? fadeInSeconds,
     double? fadeOutSeconds,
+    String text = '',
   }) {
     final safeDuration = duration.clamp(0.12, 600.0).toDouble();
 
@@ -100,11 +113,20 @@ class MotionGraphicsPlan {
     final fadeOutStart =
         (safeDuration - fadeOut).clamp(0.0, safeDuration);
 
+    final seed = (timelineStart * 10).round();
+
     final camera = MotionCameraEngine.buildFilter(
       duration: safeDuration,
       style: cameraStyle,
       depth: 0.78,
-      seed: (timelineStart * 10).round(),
+      seed: seed,
+    );
+
+    final textMotion = TextMotionEngine.buildFilter(
+      duration: safeDuration,
+      mood: _textMotionMood,
+      seed: seed,
+      text: text,
     );
 
     return [
@@ -112,6 +134,7 @@ class MotionGraphicsPlan {
       'fade=t=in:st=0:d=${_n(fadeIn)}:alpha=1',
       'fade=t=out:st=${_n(fadeOutStart)}:d=${_n(fadeOut)}:alpha=1',
       camera,
+      textMotion,
       'setpts=PTS-STARTPTS+${_n(timelineStart)}/TB',
     ].join(',');
   }
