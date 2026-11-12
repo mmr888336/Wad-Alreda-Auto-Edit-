@@ -1,8 +1,9 @@
 import 'editing_engine.dart';
+import 'motion_camera_engine.dart';
 
 enum MotionMood { calm, cinematic, dynamic }
 
-/// Topic-aware motion design timings and FFmpeg expressions.
+/// Topic-aware motion design timings, text entrances and virtual camera paths.
 class MotionGraphicsPlan {
   final MotionMood mood;
   final String label;
@@ -12,6 +13,7 @@ class MotionGraphicsPlan {
   final double hookDurationSeconds;
   final double brollFadeSeconds;
   final double captionTravel;
+  final CameraMotionStyle cameraStyle;
 
   const MotionGraphicsPlan({
     required this.mood,
@@ -22,6 +24,7 @@ class MotionGraphicsPlan {
     required this.hookDurationSeconds,
     required this.brollFadeSeconds,
     required this.captionTravel,
+    required this.cameraStyle,
   });
 
   factory MotionGraphicsPlan.forProfile(EditingProfile profile) {
@@ -37,6 +40,7 @@ class MotionGraphicsPlan {
           hookDurationSeconds: 3.2,
           brollFadeSeconds: 0.42,
           captionTravel: 0.34,
+          cameraStyle: CameraMotionStyle.restrained,
         );
 
       case EditTopic.product:
@@ -50,6 +54,7 @@ class MotionGraphicsPlan {
           hookDurationSeconds: 3.2,
           brollFadeSeconds: 0.28,
           captionTravel: 0.72,
+          cameraStyle: CameraMotionStyle.energetic,
         );
 
       case EditTopic.storytelling:
@@ -63,6 +68,7 @@ class MotionGraphicsPlan {
           hookDurationSeconds: 3.2,
           brollFadeSeconds: 0.36,
           captionTravel: 0.48,
+          cameraStyle: CameraMotionStyle.cinematic,
         );
     }
   }
@@ -72,6 +78,9 @@ class MotionGraphicsPlan {
   String _easeOut(double start, double duration) =>
       'pow(max(0,1-(t-${_n(start)})/${_n(duration)}),3)';
 
+  /// Transparent PNG caption/title input with a depth-aware camera drift.
+  /// Text receives a stronger parallax value than B-roll so the layers do
+  /// not appear to be glued to one flat plane.
   String overlayInputFilter({
     required double duration,
     required double timelineStart,
@@ -91,10 +100,18 @@ class MotionGraphicsPlan {
     final fadeOutStart =
         (safeDuration - fadeOut).clamp(0.0, safeDuration);
 
+    final camera = MotionCameraEngine.buildFilter(
+      duration: safeDuration,
+      style: cameraStyle,
+      depth: 0.78,
+      seed: (timelineStart * 10).round(),
+    );
+
     return [
       'format=rgba',
       'fade=t=in:st=0:d=${_n(fadeIn)}:alpha=1',
       'fade=t=out:st=${_n(fadeOutStart)}:d=${_n(fadeOut)}:alpha=1',
+      camera,
       'setpts=PTS-STARTPTS+${_n(timelineStart)}/TB',
     ].join(',');
   }
@@ -152,6 +169,7 @@ class MotionGraphicsPlan {
         "${_easeOut(start, hookEnterSeconds)}";
   }
 
+  /// B-roll uses a slower camera path than the foreground text layer.
   String brollInputFilter({
     required int width,
     required int height,
@@ -167,6 +185,15 @@ class MotionGraphicsPlan {
     final fadeOutStart =
         (duration - fade).clamp(0.0, duration);
 
+    final camera = MotionCameraEngine.buildFilter(
+      duration: duration,
+      style: cameraStyle,
+      depth: 0.48,
+      seed: (start * 10).round(),
+      outputWidth: width,
+      outputHeight: height,
+    );
+
     return [
       'trim=duration=${_n(duration)}',
       'setpts=PTS-STARTPTS',
@@ -176,6 +203,7 @@ class MotionGraphicsPlan {
       'format=rgba',
       'fade=t=in:st=0:d=${_n(fade)}:alpha=1',
       'fade=t=out:st=${_n(fadeOutStart)}:d=${_n(fade)}:alpha=1',
+      camera,
       'setpts=PTS+${_n(start)}/TB',
     ].join(',');
   }
