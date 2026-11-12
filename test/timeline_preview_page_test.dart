@@ -65,7 +65,11 @@ void main() {
     expect(find.byIcon(Icons.movie_outlined), findsOneWidget);
     expect(find.text('VIDEO PREVIEW'), findsOneWidget);
     expect(find.text('PROJECT TIMELINE'), findsOneWidget);
-    expect(find.text('Open layer and motion details'), findsOneWidget);
+
+    // The detailed-timeline action in the app bar is always built and visible.
+    // The larger button at the bottom belongs to a ListView and is lazy-built
+    // only after scrolling near the bottom, so it must not be searched here.
+    expect(find.byIcon(Icons.timeline_rounded), findsOneWidget);
 
     // The timeline canvas has a known size for this 8-second sample project:
     // width = 104 label + (8 seconds * 68 px) + 24 padding = 672 px
