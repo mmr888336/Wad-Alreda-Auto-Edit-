@@ -1,0 +1,36 @@
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
+
+group = 'com.omer.filament_renderer'
+version = '0.1.0'
+
+android {
+    namespace 'com.omer.filament_renderer'
+    // Keep this aligned with the generated host app in the current workflow.
+    compileSdk 36
+
+    defaultConfig {
+        // The host app currently enforces minSdk 24.
+        minSdk 24
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    // Keep all Filament artifacts on exactly the same version.
+    // 1.56.0 is deliberately pinned; update the three together only after
+    // validating the Android build and runtime on the target device.
+    implementation 'com.google.android.filament:filament-android:1.56.0'
+    implementation 'com.google.android.filament:gltfio-android:1.56.0'
+    implementation 'com.google.android.filament:filament-utils-android:1.56.0'
+}
