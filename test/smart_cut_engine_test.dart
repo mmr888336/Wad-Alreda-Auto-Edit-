@@ -48,16 +48,33 @@ void main() {
       expect(longGap, closeTo(0.15, 0.0001));
     });
 
-    test('merges overlapping and near-adjacent silence detections', () {
+    test('merges overlapping and genuinely near-adjacent silence detections', () {
+      // The first two intervals are separated by only 20 ms; the final
+      // interval overlaps the second. They should become one silence range.
+      final segments = SmartCutEngine.buildKeepSegments(
+        duration: 12,
+        silenceStarts: const [4, 2, 3.02],
+        silenceEnds: const [5, 3, 4],
+      );
+
+      expect(segments, hasLength(2));
+      expect(segments[0].end, lessThan(2.2));
+      expect(segments[1].start, greaterThan(4.8));
+    });
+
+    test('keeps a spoken bridge between silences instead of merging it away', () {
+      // There is 980 ms between the first and second silence detections.
+      // This is not a near-adjacent silence and must remain as speech.
       final segments = SmartCutEngine.buildKeepSegments(
         duration: 12,
         silenceStarts: const [4, 2, 3.98],
         silenceEnds: const [5, 3, 4.8],
       );
 
-      expect(segments, hasLength(2));
-      expect(segments[0].end, lessThan(2.2));
-      expect(segments[1].start, greaterThan(4.8));
+      expect(segments, hasLength(3));
+      expect(segments[1].start, greaterThan(2.8));
+      expect(segments[1].end, lessThan(4.2));
+      expect(segments[1].duration, greaterThan(0.9));
     });
 
     test('clamps out-of-range silence detections to video boundaries', () {
