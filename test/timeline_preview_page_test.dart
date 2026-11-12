@@ -53,7 +53,7 @@ TimelineProject _sampleProject() {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('shows preview placeholder and actual project tracks',
+  testWidgets('shows preview placeholder and actual project timeline',
       (tester) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -62,10 +62,13 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    // Track names (VIDEO and CAPTIONS) are painted directly onto the
+    // CustomPainter canvas, so they are not standalone Text widgets.
     expect(find.byIcon(Icons.movie_outlined), findsOneWidget);
-    expect(find.text('VIDEO'), findsOneWidget);
-    expect(find.text('CAPTIONS'), findsOneWidget);
-    expect(find.textContaining('Open layer and motion details'), findsOneWidget);
+    expect(find.text('VIDEO PREVIEW'), findsOneWidget);
+    expect(find.text('PROJECT TIMELINE'), findsOneWidget);
+    expect(find.byType(CustomPaint), findsOneWidget);
+    expect(find.text('Open layer and motion details'), findsOneWidget);
   });
 
   testWidgets('shows play controls disabled when no video path is supplied',
@@ -79,8 +82,7 @@ void main() {
 
     final playButton = tester.widget<IconButton>(
       find.byWidgetPredicate(
-        (widget) => widget is IconButton &&
-            widget.tooltip == 'Play',
+        (widget) => widget is IconButton && widget.tooltip == 'Play',
       ),
     );
     expect(playButton.onPressed, isNull);
