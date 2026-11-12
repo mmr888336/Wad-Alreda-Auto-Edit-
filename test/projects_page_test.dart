@@ -109,7 +109,14 @@ void main() {
     await tester.pump();
 
     await tester.tap(find.text(project.name));
-    await tester.pumpAndSettle();
+
+    // Do not use pumpAndSettle here. TimelinePreviewPage starts checking the
+    // saved video path and displays an indeterminate progress indicator while
+    // VideoPlayerController initializes. That animation is intentionally
+    // ongoing, so pumpAndSettle times out even though navigation succeeded.
+    // Pump the route transition for its finite duration, then inspect the page.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
 
     final previewFinder = find.byType(TimelinePreviewPage);
     expect(previewFinder, findsOneWidget);
