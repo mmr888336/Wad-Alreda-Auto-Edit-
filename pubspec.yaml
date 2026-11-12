@@ -20,6 +20,7 @@ dependencies:
   unity_ads_plugin: ^0.4.0
   gal: ^2.3.1
   google_fonts: ^6.2.1
+  video_player: ^2.9.2
 
 dev_dependencies:
   flutter_test:
