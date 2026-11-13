@@ -25,8 +25,7 @@ import java.nio.ByteOrder
  * Android plugin for Wad Alreda AutoEdit's Filament renderer.
  *
  * The method channel retains the phase-one lifecycle diagnostics. The
- * PlatformView hosts a real Filament ModelViewer and loads a bundled GLB
- * sample so the first test can confirm native rendering on a physical device.
+ * PlatformView hosts a Filament ModelViewer and loads a bundled GLB sample.
  */
 class FilamentRendererPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     companion object {
@@ -122,7 +121,7 @@ private class FilamentModelViewFactory : PlatformViewFactory(StandardMessageCode
 
 /**
  * A real Android SurfaceView backed by Filament's ModelViewer.
- * A simple bundled cube GLB is used to validate GLB loading and GPU rendering.
+ * A bundled cube GLB validates model loading and GPU rendering.
  */
 private class FilamentModelPlatformView(context: Context) : PlatformView {
     private val root = FrameLayout(context)
@@ -162,9 +161,15 @@ private class FilamentModelPlatformView(context: Context) : PlatformView {
             modelViewer = viewer
             viewer.loadModelGlb(readBundledModel(context))
             viewer.transformToUnitCube()
-            surfaceView.setOnTouchListener { _: View, event ->
+
+            // ModelViewer.onTouchEvent returns Unit in this Filament version.
+            // Android's OnTouchListener must return a Boolean, so consume the
+            // touch after forwarding it to the camera controller.
+            surfaceView.setOnTouchListener { _, event ->
                 viewer.onTouchEvent(event)
+                true
             }
+
             choreographer.postFrameCallback(frameCallback)
         } catch (error: Throwable) {
             showError(error)
@@ -188,14 +193,23 @@ private class FilamentModelPlatformView(context: Context) : PlatformView {
             }
     }
 
+    /**
+     * ModelViewer in Filament 1.56.0 has no destroy() method. Its Engine is
+     * exposed directly; destroying it releases the viewer's native resources.
+     */
+    private fun releaseModelViewer() {
+        val viewer = modelViewer ?: return
+        modelViewer = null
+        try {
+            viewer.engine.destroy()
+        } catch (_: Throwable) {
+            // Best-effort GPU cleanup; do not hide the original render error.
+        }
+    }
+
     private fun showError(error: Throwable) {
         choreographer.removeFrameCallback(frameCallback)
-        try {
-            modelViewer?.destroy()
-        } catch (_: Throwable) {
-            // Ignore cleanup failure while presenting the original error.
-        }
-        modelViewer = null
+        releaseModelViewer()
         root.removeView(surfaceView)
         val message = TextView(root.context).apply {
             text = "Filament / GLB load failed\n\n${error.javaClass.simpleName}: ${error.message ?: "Unknown error"}"
@@ -220,11 +234,6 @@ private class FilamentModelPlatformView(context: Context) : PlatformView {
         if (disposed) return
         disposed = true
         choreographer.removeFrameCallback(frameCallback)
-        try {
-            modelViewer?.destroy()
-        } catch (_: Throwable) {
-            // Best-effort release of GPU resources.
-        }
-        modelViewer = null
+        releaseModelViewer()
     }
 }
