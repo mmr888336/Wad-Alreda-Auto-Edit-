@@ -1,18 +1,20 @@
 import 'package:flutter/services.dart';
 
-/// Dart bridge to the Android-native Filament engine.
+/// Dart bridge to the Android-native Filament renderer.
 ///
-/// This first integration phase intentionally exposes only engine lifecycle
-/// methods. It does not create a render surface or render GLB files yet.
-/// Those capabilities will be added after the native engine is verified on
-/// the target Android device and ABI.
+/// The method channel provides lifecycle diagnostics, while [modelViewType]
+/// identifies the Android PlatformView that displays the bundled GLB model.
 class FilamentRenderer {
   FilamentRenderer._();
 
   static const MethodChannel _channel =
       MethodChannel('com.omer.filament_renderer/methods');
 
-  /// Creates the native Filament Engine once for this Android process.
+  /// Must match the view type registered by FilamentRendererPlugin on Android.
+  static const String modelViewType =
+      'com.omer.filament_renderer/model_view';
+
+  /// Creates the diagnostic native Filament Engine once for this process.
   ///
   /// Returns true when the native engine exists. Throws a [PlatformException]
   /// if the native library cannot be loaded or the engine cannot be created.
@@ -21,7 +23,7 @@ class FilamentRenderer {
     return initialized ?? false;
   }
 
-  /// Reports whether the native Filament Engine has been initialized.
+  /// Reports whether the diagnostic native engine has been initialized.
   static Future<bool> get isInitialized async {
     final value = await _channel.invokeMethod<bool>('isInitialized');
     return value ?? false;
@@ -33,7 +35,7 @@ class FilamentRenderer {
     return value ?? 'unknown';
   }
 
-  /// Destroys the native engine if it was initialized.
+  /// Destroys the diagnostic native engine if it was initialized.
   static Future<void> dispose() async {
     await _channel.invokeMethod<void>('dispose');
   }
