@@ -1,6 +1,8 @@
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart'
+    show PlatformViewHitTestBehavior;
 
 import 'package:filament_renderer/filament_renderer.dart';
 
@@ -18,7 +20,8 @@ class ThreeDRenderSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final supported =
-        !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+        !kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.android;
 
     if (!supported) {
       return SizedBox(
