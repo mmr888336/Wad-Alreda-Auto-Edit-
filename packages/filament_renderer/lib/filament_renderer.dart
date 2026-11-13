@@ -1,17 +1,15 @@
 import 'package:flutter/services.dart';
 
-/// Flutter bridge for the native Filament preview and frame capture.
+/// Flutter bridge for the native Filament 3D viewer, asset loading and camera.
 class FilamentRenderer {
   FilamentRenderer._();
 
   static const MethodChannel _channel =
       MethodChannel('com.omer.filament_renderer/methods');
 
-  /// Must match the Android PlatformView factory registration.
   static const String modelViewType =
       'com.omer.filament_renderer/model_view';
 
-  /// Kept for compatibility with the phase-one native bridge.
   static Future<bool> initialize() async {
     final value = await _channel.invokeMethod<bool>('initialize');
     return value ?? false;
@@ -31,7 +29,6 @@ class FilamentRenderer {
     await _channel.invokeMethod<void>('dispose');
   }
 
-  /// Gets the actual Android surface/model/render-loop state for this view.
   static Future<Map<String, dynamic>> getViewDiagnostics(int viewId) async {
     final value = await _channel.invokeMapMethod<String, dynamic>(
       'getViewDiagnostics',
@@ -40,7 +37,29 @@ class FilamentRenderer {
     return value ?? <String, dynamic>{};
   }
 
-  /// Captures the visible Filament SurfaceView as numbered PNG frames.
+  /// Loads a downloaded, self-contained GLB v2 file into the live Filament view.
+  static Future<void> loadModelFromFile({
+    required int viewId,
+    required String filePath,
+  }) async {
+    await _channel.invokeMethod<void>(
+      'loadModelFromFile',
+      <String, Object>{'viewId': viewId, 'filePath': filePath},
+    );
+  }
+
+  /// Starts an automated native 3D camera path. The user can still take over
+  /// the camera by touching the model; a fresh mode call restarts automation.
+  static Future<void> setCameraMotion({
+    required int viewId,
+    required String mode,
+  }) async {
+    await _channel.invokeMethod<void>(
+      'setCameraMotion',
+      <String, Object>{'viewId': viewId, 'mode': mode},
+    );
+  }
+
   static Future<String> captureFrames({
     required int viewId,
     double durationSeconds = 3,
