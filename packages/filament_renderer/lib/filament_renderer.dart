@@ -1,42 +1,62 @@
 import 'package:flutter/services.dart';
 
-/// Dart bridge to the Android-native Filament renderer.
-///
-/// The method channel provides lifecycle diagnostics, while [modelViewType]
-/// identifies the Android PlatformView that displays the bundled GLB model.
+/// Flutter bridge for the native Filament preview and frame capture.
 class FilamentRenderer {
   FilamentRenderer._();
 
   static const MethodChannel _channel =
       MethodChannel('com.omer.filament_renderer/methods');
 
-  /// Must match the view type registered by FilamentRendererPlugin on Android.
+  /// Must match the Android PlatformView factory registration.
   static const String modelViewType =
       'com.omer.filament_renderer/model_view';
 
-  /// Creates the diagnostic native Filament Engine once for this process.
-  ///
-  /// Returns true when the native engine exists. Throws a [PlatformException]
-  /// if the native library cannot be loaded or the engine cannot be created.
+  /// Kept for compatibility with the phase-one native bridge.
   static Future<bool> initialize() async {
-    final initialized = await _channel.invokeMethod<bool>('initialize');
-    return initialized ?? false;
+    final value = await _channel.invokeMethod<bool>('initialize');
+    return value ?? false;
   }
 
-  /// Reports whether the diagnostic native engine has been initialized.
   static Future<bool> get isInitialized async {
     final value = await _channel.invokeMethod<bool>('isInitialized');
     return value ?? false;
   }
 
-  /// Returns the Filament artifact version linked into the Android plugin.
   static Future<String> getNativeVersion() async {
     final value = await _channel.invokeMethod<String>('getNativeVersion');
     return value ?? 'unknown';
   }
 
-  /// Destroys the diagnostic native engine if it was initialized.
   static Future<void> dispose() async {
     await _channel.invokeMethod<void>('dispose');
+  }
+
+  /// Gets the actual Android surface/model/render-loop state for this view.
+  static Future<Map<String, dynamic>> getViewDiagnostics(int viewId) async {
+    final value = await _channel.invokeMapMethod<String, dynamic>(
+      'getViewDiagnostics',
+      <String, Object>{'viewId': viewId},
+    );
+    return value ?? <String, dynamic>{};
+  }
+
+  /// Captures the visible Filament SurfaceView as numbered PNG frames.
+  static Future<String> captureFrames({
+    required int viewId,
+    double durationSeconds = 3,
+    int frameRate = 24,
+  }) async {
+    final path = await _channel.invokeMethod<String>(
+      'captureFrames',
+      <String, Object>{
+        'viewId': viewId,
+        'durationSeconds': durationSeconds,
+        'frameRate': frameRate,
+      },
+    );
+    if (path == null || path.trim().isEmpty) {
+      throw StateError('Filament did not return a frame directory.');
+    }
+    return path;
   }
 }
