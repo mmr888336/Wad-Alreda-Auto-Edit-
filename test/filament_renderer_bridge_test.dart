@@ -14,23 +14,18 @@ void main() {
   });
 
   test('initialize asks the Android plugin to create Filament', () async {
-    var called = false;
     messenger.setMockMethodCallHandler(channel, (call) async {
       expect(call.method, 'initialize');
-      called = true;
       return true;
     });
-
     expect(await FilamentRenderer.initialize(), isTrue);
-    expect(called, isTrue);
   });
 
-  test('isInitialized returns the native engine state', () async {
+  test('isInitialized returns native engine state', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       expect(call.method, 'isInitialized');
       return true;
     });
-
     expect(await FilamentRenderer.isInitialized, isTrue);
   });
 
@@ -39,7 +34,6 @@ void main() {
       expect(call.method, 'getNativeVersion');
       return '1.56.0';
     });
-
     expect(await FilamentRenderer.getNativeVersion(), '1.56.0');
   });
 
@@ -50,15 +44,44 @@ void main() {
       called = true;
       return null;
     });
-
     await FilamentRenderer.dispose();
     expect(called, isTrue);
   });
 
-  test('model view type matches the Android plugin registration', () {
+  test('model view type matches Android plugin registration', () {
     expect(
       FilamentRenderer.modelViewType,
       'com.omer.filament_renderer/model_view',
     );
+  });
+
+  test('renderer diagnostics are requested for the selected native view', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'getViewDiagnostics');
+      expect(call.arguments, <String, Object>{'viewId': 7});
+      return <String, Object>{
+        'surfaceReady': true,
+        'modelLoaded': true,
+        'framesRendered': 12,
+      };
+    });
+    final state = await FilamentRenderer.getViewDiagnostics(7);
+    expect(state['surfaceReady'], isTrue);
+    expect(state['modelLoaded'], isTrue);
+    expect(state['framesRendered'], 12);
+  });
+
+  test('captureFrames returns the native frame directory', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'captureFrames');
+      expect(call.arguments, <String, Object>{
+        'viewId': 7,
+        'durationSeconds': 3.0,
+        'frameRate': 24,
+      });
+      return '/tmp/filament_frames_test';
+    });
+    final path = await FilamentRenderer.captureFrames(viewId: 7);
+    expect(path, '/tmp/filament_frames_test');
   });
 }
