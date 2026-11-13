@@ -16,6 +16,8 @@ import 'languages.dart';
 import 'projects_page.dart';
 import 'settings.dart';
 import 'silence_cutter.dart';
+import 'three_d_render_surface.dart';
+import 'three_d_scene_pipeline.dart';
 import 'timeline_preview_page.dart';
 
 void main() {
@@ -222,6 +224,17 @@ class _HomePageState extends State<HomePage> {
   bool busy = false;
   bool saving = false;
 
+  /// Native Filament PlatformView identifier.
+  int? _threeDViewId;
+
+  void _onThreeDPlatformViewCreated(int id) {
+    if (!mounted) return;
+
+    setState(() {
+      _threeDViewId = id;
+    });
+  }
+
   Future<void> _pick() async {
     try {
       final picked =
@@ -254,6 +267,10 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// Runs the original editing engine first, then adds native 3D scenes.
+  ///
+  /// The 3D stage runs after the ad page is closed, while HomePage and its
+  /// native Filament surface are visible again.
   Future<_PipelineOut> _pipeline(
     String source,
     AppSettings settings,
@@ -272,7 +289,9 @@ class _HomePageState extends State<HomePage> {
         },
         onProgress: (value) {
           if (mounted) {
-            setState(() => progress = value * 0.15);
+            setState(() {
+              progress = value * 0.12;
+            });
           }
         },
       );
@@ -289,10 +308,60 @@ class _HomePageState extends State<HomePage> {
         },
         onProgress: (value) {
           if (mounted) {
-            setState(() => progress = 0.15 + value * 0.85);
+            setState(() {
+              progress = 0.12 + value * 0.68;
+            });
           }
         },
       );
+
+      final viewId = _threeDViewId;
+
+      if (viewId == null) {
+        enhanced.notes.add(
+          'تم تصدير الفيديو الأساسي، لكن شاشة Filament لم تكن متصلة؛ لم تتم إضافة مشاهد 3D.',
+        );
+      } else if (settings.online3DAssetsEnabled) {
+        if (mounted) {
+          setState(() {
+            progress = 0.82;
+            status = 'جاري تجهيز مشاهد 3D وربطها بالتوقيتات...';
+          });
+        }
+
+        final threeDResult = await ThreeDScenePipeline.apply(
+          viewId: viewId,
+          videoPath: enhanced.videoPath,
+          timeline: enhanced.timelineProject,
+          settings: settings,
+          onStatus: (message) {
+            if (!mounted) return;
+
+            setState(() {
+              status = message;
+              progress = 0.84;
+            });
+          },
+        );
+
+        enhanced.notes.addAll(threeDResult.notes);
+
+        if (threeDResult.applied) {
+          enhanced.notes.add(
+            'تم دمج ${threeDResult.scenesRendered} مشهد 3D متحرك في الفيديو النهائي.',
+          );
+        }
+      } else {
+        enhanced.notes.add(
+          'مصادر المجسمات ثلاثية الأبعاد معطلة من الإعدادات؛ تم تصدير الفيديو الأساسي.',
+        );
+      }
+
+      if (mounted) {
+        setState(() {
+          progress = 0.98;
+        });
+      }
 
       return _PipelineOut(cut, enhanced);
     } catch (_) {
@@ -309,9 +378,6 @@ class _HomePageState extends State<HomePage> {
     final source = inputPath;
     if (source == null || busy) return;
 
-    final settings = await AppSettings.load();
-    JobControl.reset();
-
     setState(() {
       busy = true;
       progress = 0;
@@ -321,10 +387,10 @@ class _HomePageState extends State<HomePage> {
           '${AppLocalizations.t('adNotice')}';
     });
 
-    final pipeline = _pipeline(source, settings);
-    pipeline.ignore();
-
     try {
+      final settings = await AppSettings.load();
+      JobControl.reset();
+
       final adCompleted = await Navigator.of(context).push<bool>(
         MaterialPageRoute(builder: (_) => const AdPage()),
       );
@@ -332,19 +398,10 @@ class _HomePageState extends State<HomePage> {
       if (!mounted) return;
 
       if (adCompleted != true) {
-        await JobControl.cancel();
-
-        try {
-          await pipeline;
-        } catch (_) {}
-
-        if (!mounted) return;
-
         setState(() {
           progress = null;
           status = AppLocalizations.t('adExportStopped');
         });
-
         return;
       }
 
@@ -352,7 +409,7 @@ class _HomePageState extends State<HomePage> {
         status = AppLocalizations.t('adFinished');
       });
 
-      final out = await pipeline;
+      final out = await _pipeline(source, settings);
 
       if (!mounted) return;
 
@@ -382,7 +439,9 @@ class _HomePageState extends State<HomePage> {
       }
     } finally {
       if (mounted) {
-        setState(() => busy = false);
+        setState(() {
+          busy = false;
+        });
       }
     }
   }
@@ -565,7 +624,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 const SizedBox(height: 5),
                 const Text(
-                  'Silence cutting • Audio • Captions • B-roll • Cover',
+                  'Silence cutting • Audio • Captions • B-roll • 3D • Cover',
                   style: TextStyle(
                     color: Colors.white70,
                     fontSize: 12,
@@ -575,6 +634,56 @@ class _HomePageState extends State<HomePage> {
               ],
             ),
           ),
+
+          // Keep the real native Filament Surface mounted on HomePage.
+          // The automatic renderer needs this SurfaceView to capture frames.
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF171721),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(
+                color: const Color(0xFF55438C),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(
+                      Icons.view_in_ar_rounded,
+                      color: Color(0xFFB7A8FF),
+                    ),
+                    SizedBox(width: 8),
+                    Text(
+                      'Filament 3D Render Engine',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                ThreeDRenderSurface(
+                  onPlatformViewCreated: _onThreeDPlatformViewCreated,
+                  height: 280,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _threeDViewId == null
+                      ? 'جاري تهيئة محرك 3D...'
+                      : 'محرك 3D متصل وجاهز لاستقبال المشاهد.',
+                  style: const TextStyle(
+                    color: Colors.white60,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
           const SizedBox(height: 18),
           OutlinedButton.icon(
             onPressed: busy ? null : _pick,
