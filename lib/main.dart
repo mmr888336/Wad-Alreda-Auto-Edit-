@@ -13,6 +13,7 @@ import 'enhancer.dart';
 import 'filament_test_page.dart';
 import 'language_page.dart';
 import 'languages.dart';
+import 'person_tracking_test_page.dart';
 import 'projects_page.dart';
 import 'settings.dart';
 import 'silence_cutter.dart';
@@ -681,6 +682,24 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
               ],
+            ),
+          ),
+
+          // Phase 1 manual test screen: visual person tracking.
+          const SizedBox(height: 10),
+          TextButton.icon(
+            onPressed: busy
+                ? null
+                : () => Navigator.of(context).push<void>(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const PersonTrackingTestPage(),
+                      ),
+                    ),
+            icon: const Icon(Icons.accessibility_new_rounded),
+            label: Text(
+              AppLocalizations.isRtl
+                  ? 'اختبار تتبع الأشخاص (المرحلة 1)'
+                  : 'Person tracking test (Phase 1)',
             ),
           ),
 
