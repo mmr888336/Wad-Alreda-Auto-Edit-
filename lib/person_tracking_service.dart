@@ -4,9 +4,18 @@ import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 import 'package:path_provider/path_provider.dart';
 
-import 'ml_kit_person_detector.dart';
 import 'person_tracking_models.dart';
 import 'visual_tracking_engine.dart';
+
+/// Thrown when no [PersonDetector] backend is installed in this build.
+class PersonDetectorUnavailable implements Exception {
+  const PersonDetectorUnavailable();
+
+  @override
+  String toString() =>
+      'كاشف الأشخاص غير مفعّل في هذه النسخة. تم عزل مكتبة ML Kit مؤقتاً '
+      'حتى يتأكد استقرار التطبيق مع محرك Filament.';
+}
 
 /// Result of analyzing one video, plus the sampled frames when they were kept
 /// for preview.
@@ -35,8 +44,18 @@ class PersonTrackingRun {
 }
 
 /// Samples frames from a video with FFmpeg and runs the tracking engine.
+///
+/// The detector backend is injected: pass a [PersonDetector] to
+/// [analyzeVideo], or register one in [detectorFactory]. No native detector
+/// is bundled in the app by default.
 class PersonTrackingService {
   PersonTrackingService._();
+
+  /// Creates the default detector when [analyzeVideo] gets none. Null means
+  /// that no detector backend is installed in this build.
+  static PersonDetector Function()? detectorFactory;
+
+  static bool get hasDetector => detectorFactory != null;
 
   static String _tail(String value) =>
       value.length > 500 ? value.substring(value.length - 500) : value;
@@ -50,6 +69,11 @@ class PersonTrackingService {
     void Function(double progress)? onProgress,
     bool Function()? isCancelled,
   }) async {
+    final factory = detectorFactory;
+    if (detector == null && factory == null) {
+      throw const PersonDetectorUnavailable();
+    }
+
     if (!await File(videoPath).exists()) {
       throw FileSystemException('ملف الفيديو غير موجود.', videoPath);
     }
@@ -115,7 +139,7 @@ class PersonTrackingService {
           ),
       ];
 
-      final PersonDetector active = detector ?? (created = MlKitPersonDetector());
+      final PersonDetector active = detector ?? (created = factory!());
 
       onStatus?.call(
         'جاري اكتشاف الأشخاص وتتبعهم (${frames.length} إطار)...',
