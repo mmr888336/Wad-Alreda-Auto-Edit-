@@ -324,7 +324,10 @@ private class FilamentModelPlatformView(
 ) : PlatformView {
 
     private val root = FrameLayout(appContext)
-    private val surfaceView = SurfaceView(appContext)
+    // The first SurfaceView is only a lightweight touch target.
+    // A fresh SurfaceView is created before ModelViewer so Filament can
+    // register its SurfaceHolder callbacks before Android creates the Surface.
+    private var surfaceView = SurfaceView(appContext)
 
     private val choreographer = Choreographer.getInstance()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -341,6 +344,7 @@ private class FilamentModelPlatformView(
     private var modelLoaded = false
     private var rendererInitializing = false
     private var initializationRequested = false
+    private var layoutRetryScheduled = false
 
     private var framesRendered = 0L
     private var lastError: String? = null
@@ -462,35 +466,12 @@ private class FilamentModelPlatformView(
 
     init {
         // Creating this PlatformView is intentionally lightweight.
-        // No Filament Engine, ModelViewer, GLB loading or render loop here.
+        // This initial SurfaceView is a placeholder/touch target only.
+        // Do NOT attach Filament's ModelViewer to an already-created Surface:
+        // ModelViewer must register its holder callbacks before Surface creation.
         root.setBackgroundColor(Color.rgb(13, 16, 25))
         surfaceView.setBackgroundColor(Color.rgb(13, 16, 25))
-
-        surfaceView.holder.addCallback(holderCallback)
-
-        surfaceView.setOnTouchListener { _, event ->
-            val viewer = modelViewer
-
-            if (viewer == null || !modelLoaded) {
-                // First tap requests the renderer instead of touching
-                // an uninitialized native ModelViewer.
-                requestInitialization()
-                true
-            } else {
-                try {
-                    cameraMode = "manual"
-                    endCameraGesture()
-
-                    viewer.onTouchEvent(event)
-                    scheduleFrame()
-
-                    true
-                } catch (error: Throwable) {
-                    showError(error)
-                    true
-                }
-            }
-        }
+        installTouchHandler(surfaceView)
 
         root.addView(
             surfaceView,
@@ -501,12 +482,41 @@ private class FilamentModelPlatformView(
         )
     }
 
+    private fun installTouchHandler(target: SurfaceView) {
+        target.setOnTouchListener { _, event ->
+            val viewer = modelViewer
+
+            if (viewer == null || !modelLoaded) {
+                // First tap starts lazy initialization. The actual render
+                // Surface is replaced before ModelViewer is constructed.
+                requestInitialization()
+                true
+            } else {
+                try {
+                    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                        cameraMode = "manual"
+                        endCameraGesture()
+                    }
+
+                    viewer.onTouchEvent(event)
+                    scheduleFrame()
+                    true
+                } catch (error: Throwable) {
+                    showError(error)
+                    true
+                }
+            }
+        }
+    }
+
     fun requestInitialization() {
         ensureRendererInitialized()
     }
 
     private fun completeInitialization(error: Throwable?) {
         rendererInitializing = false
+        initializationRequested = false
+        layoutRetryScheduled = false
 
         val callbacks = initializationCallbacks.toList()
         initializationCallbacks.clear()
@@ -560,13 +570,18 @@ private class FilamentModelPlatformView(
 
         if (rendererInitializing) return
 
-        if (
-            !surfaceReady ||
-            !surfaceView.holder.surface.isValid ||
-            surfaceView.width <= 0 ||
-            surfaceView.height <= 0
-        ) {
-            // surfaceChanged will retry when the Surface is ready.
+        if (root.width <= 0 || root.height <= 0) {
+            // A diagnostics request can arrive before the PlatformView has
+            // completed its first layout. Schedule only one retry at a time.
+            if (!layoutRetryScheduled) {
+                layoutRetryScheduled = true
+                root.post {
+                    layoutRetryScheduled = false
+                    if (initializationRequested && !rendererInitializing && !disposed) {
+                        ensureRendererInitialized()
+                    }
+                }
+            }
             return
         }
 
@@ -608,23 +623,35 @@ private class FilamentModelPlatformView(
                     }
 
                     var viewer: ModelViewer? = null
+                    var renderSurface: SurfaceView? = null
+                    val placeholderSurface = surfaceView
 
                     try {
                         FilamentUtilsBootstrap.ensureInitialized()
 
+                        // Important lifecycle fix:
+                        // build ModelViewer against a NEW, unattached SurfaceView.
+                        // ModelViewer registers SurfaceHolder.Callback in its
+                        // constructor. Attaching the SurfaceView only AFTER that
+                        // ensures it receives surfaceCreated/surfaceChanged.
+                        // Constructing it around the already-visible placeholder
+                        // missed those callbacks on several Android devices.
+                        val candidateSurface = SurfaceView(appContext).apply {
+                            setBackgroundColor(Color.rgb(13, 16, 25))
+                        }
+                        renderSurface = candidateSurface
+
+                        val initialWidth = root.width.coerceAtLeast(1)
+                        val initialHeight = root.height.coerceAtLeast(1)
+
                         val manipulator = Manipulator.Builder()
                             .targetPosition(0.0f, 0.0f, -4.0f)
                             .orbitHomePosition(0.0f, 0.0f, 1.0f)
-                            .viewport(
-                                surfaceView.width.coerceAtLeast(1),
-                                surfaceView.height.coerceAtLeast(1)
-                            )
+                            .viewport(initialWidth, initialHeight)
                             .build(Manipulator.Mode.ORBIT)
 
-                        cameraManipulator = manipulator
-
                         viewer = ModelViewer(
-                            surfaceView,
+                            candidateSurface,
                             manipulator = manipulator
                         )
 
@@ -638,10 +665,29 @@ private class FilamentModelPlatformView(
 
                         viewer.transformToUnitCube()
 
+                        // Register our callback before attaching the new view.
+                        // ModelViewer's own callback was registered in its ctor.
+                        candidateSurface.holder.addCallback(holderCallback)
+                        installTouchHandler(candidateSurface)
+
+                        // Replace the already-created placeholder only after the
+                        // Filament viewer has subscribed to the fresh Surface.
+                        placeholderSurface.setOnTouchListener(null)
+                        root.removeView(placeholderSurface)
+                        surfaceView = candidateSurface
+                        cameraManipulator = manipulator
                         modelViewer = viewer
                         modelLoaded = true
-                        activeModelPath =
-                            "bundled:filament_sample.glb"
+                        activeModelPath = "bundled:filament_sample.glb"
+                        surfaceReady = false
+
+                        root.addView(
+                            candidateSurface,
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                        )
 
                         lastError = null
                         cameraElapsed = 0.0
@@ -649,8 +695,40 @@ private class FilamentModelPlatformView(
                         lastRenderedFrameNanos = 0L
 
                         completeInitialization(null)
-                        scheduleFrame()
+
+                        // Most Android versions dispatch surfaceCreated
+                        // asynchronously; this extra check also handles a
+                        // Surface that became ready immediately on attachment.
+                        if (candidateSurface.holder.surface.isValid) {
+                            surfaceReady = true
+                            cameraManipulator?.setViewport(
+                                candidateSurface.width.coerceAtLeast(1),
+                                candidateSurface.height.coerceAtLeast(1)
+                            )
+                            scheduleFrame()
+                        }
                     } catch (error: Throwable) {
+                        try {
+                            renderSurface?.holder?.removeCallback(holderCallback)
+                            renderSurface?.setOnTouchListener(null)
+                            renderSurface?.let { root.removeView(it) }
+                        } catch (_: Throwable) {
+                        }
+
+                        if (surfaceView === renderSurface) {
+                            surfaceView = placeholderSurface
+                        }
+                        if (placeholderSurface.parent == null && !disposed) {
+                            installTouchHandler(placeholderSurface)
+                            root.addView(
+                                placeholderSurface,
+                                FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                            )
+                        }
+
                         try {
                             viewer?.destroyModel()
                             viewer?.engine?.destroy()
@@ -660,6 +738,7 @@ private class FilamentModelPlatformView(
                         modelViewer = null
                         cameraManipulator = null
                         modelLoaded = false
+                        surfaceReady = false
 
                         failInitialization(error)
                     }
