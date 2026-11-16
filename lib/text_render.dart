@@ -6,6 +6,20 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'caption_style_engine.dart';
 
+/// A caption rendered as a vertical film strip: one frame per word, where the
+/// frame k has word k drawn in the highlight color.
+class WordStrip {
+  final String path;
+  final int frameHeight;
+  final int wordCount;
+
+  const WordStrip({
+    required this.path,
+    required this.frameHeight,
+    required this.wordCount,
+  });
+}
+
 /// Renders transparent PNG captions with a cached, project-stable font style.
 class TextRender {
   static final Map<String, Future<TextStyle>> _fontStyleCache = {};
@@ -90,6 +104,20 @@ class TextRender {
     required String language,
   }) => CaptionStyleEngine.fontForLanguage(requestedFont, language);
 
+  /// Accent color of the active word for a caption style.
+  static Color highlightFor(String style) {
+    switch (CaptionStyleEngine.normalize(style)) {
+      case 'neon':
+        return const Color(0xFFFF6AD5);
+      case 'cinematic':
+        return const Color(0xFFFF9F43);
+      case 'bold_center':
+        return const Color(0xFFFF5252);
+      default:
+        return const Color(0xFFFFD400);
+    }
+  }
+
   static Future<String> png({
     required String text,
     required String outPath,
@@ -101,8 +129,70 @@ class TextRender {
     String style = 'classic',
     String fontFamily = 'Cairo',
   }) async {
+    final result = await _draw(
+      text: text,
+      outPath: outPath,
+      width: width,
+      fontSize: fontSize,
+      fill: fill,
+      stroke: stroke,
+      box: box,
+      style: style,
+      fontFamily: fontFamily,
+      strip: false,
+    );
+    return result.path;
+  }
+
+  /// Renders the caption once per word, stacked vertically, with the current
+  /// word in the highlight color.
+  static Future<WordStrip> pngWordStrip({
+    required String text,
+    required String outPath,
+    required int width,
+    required double fontSize,
+    Color fill = Colors.white,
+    Color stroke = Colors.black,
+    String style = 'classic',
+    String fontFamily = 'Cairo',
+  }) {
+    return _draw(
+      text: text,
+      outPath: outPath,
+      width: width,
+      fontSize: fontSize,
+      fill: fill,
+      stroke: stroke,
+      box: false,
+      style: style,
+      fontFamily: fontFamily,
+      strip: true,
+    );
+  }
+
+  static Future<WordStrip> _draw({
+    required String text,
+    required String outPath,
+    required int width,
+    required double fontSize,
+    required Color fill,
+    required Color stroke,
+    required bool box,
+    required String style,
+    required String fontFamily,
+    required bool strip,
+  }) async {
     final stableStyle = CaptionStyleEngine.normalize(style);
-    final direction = _directionOf(text);
+    final words = strip
+        ? text.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList()
+        : <String>[];
+    if (strip && words.isEmpty) {
+      throw ArgumentError.value(text, 'text', 'Caption text is empty.');
+    }
+    final shownText = strip ? words.join(' ') : text;
+    final frames = strip ? words.length : 1;
+
+    final direction = _directionOf(shownText);
     final maxW = width * 0.9;
     final effectiveFontSize = fontSize *
         ((stableStyle == 'bold_center') ? 1.08 : 1.0);
@@ -130,20 +220,24 @@ class TextRender {
     final backColor = stableStyle == 'neon'
         ? const Color(0xFF5B27FF)
         : stroke;
-    TextPainter build(TextStyle textStyle) => TextPainter(
-          text: TextSpan(text: text, style: textStyle),
+
+    TextPainter build(TextSpan span) => TextPainter(
+          text: span,
           textDirection: direction,
           textAlign: TextAlign.center,
           maxLines: 3,
         )..layout(minWidth: maxW, maxWidth: maxW);
 
     final back = build(
-      baseStyle.copyWith(
-        foreground: Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = strokeW
-          ..strokeJoin = StrokeJoin.round
-          ..color = backColor,
+      TextSpan(
+        text: shownText,
+        style: baseStyle.copyWith(
+          foreground: Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = strokeW
+            ..strokeJoin = StrokeJoin.round
+            ..color = backColor,
+        ),
       ),
     );
 
@@ -187,34 +281,69 @@ class TextRender {
             shadows: const <Shadow>[],
           )
         : baseStyle.copyWith(color: effectiveFill, shadows: shadows);
-    final front = build(frontStyle);
 
-    final height = (back.height + pad * 2).ceil();
+    final highlight = highlightFor(stableStyle);
+    final TextStyle activeStyle = stableStyle == 'outline'
+        ? baseStyle.copyWith(
+            foreground: Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = effectiveFontSize * 0.09
+              ..strokeJoin = StrokeJoin.round
+              ..color = highlight,
+            shadows: const <Shadow>[],
+          )
+        : frontStyle.copyWith(color: highlight);
+
+    TextPainter frontFor(int frame) {
+      if (!strip) {
+        return build(TextSpan(text: shownText, style: frontStyle));
+      }
+      final children = <InlineSpan>[];
+      for (var i = 0; i < words.length; i++) {
+        if (i > 0) children.add(const TextSpan(text: ' '));
+        children.add(
+          TextSpan(
+            text: words[i],
+            style: i == frame ? activeStyle : null,
+          ),
+        );
+      }
+      return build(TextSpan(style: frontStyle, children: children));
+    }
+
+    final frameHeight = (back.height + pad * 2).ceil();
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
     final left = (width - maxW) / 2;
 
-    if (hasBox) {
-      final boxColor = stableStyle == 'cinematic'
-          ? const Color(0xB3221A10)
-          : stableStyle == 'neon'
-              ? const Color(0xB31B1242)
-              : const Color(0xB3000000);
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(
-          Rect.fromLTWH(left, 0, maxW, height.toDouble()),
-          Radius.circular(effectiveFontSize * 0.4),
-        ),
-        Paint()..color = boxColor,
-      );
+    for (var frame = 0; frame < frames; frame++) {
+      final top = (frame * frameHeight).toDouble();
+
+      if (hasBox) {
+        final boxColor = stableStyle == 'cinematic'
+            ? const Color(0xB3221A10)
+            : stableStyle == 'neon'
+                ? const Color(0xB31B1242)
+                : const Color(0xB3000000);
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(left, top, maxW, frameHeight.toDouble()),
+            Radius.circular(effectiveFontSize * 0.4),
+          ),
+          Paint()..color = boxColor,
+        );
+      }
+
+      if (stableStyle != 'outline') {
+        back.paint(canvas, Offset(left, top + pad));
+      }
+      frontFor(frame).paint(canvas, Offset(left, top + pad));
     }
 
-    if (stableStyle != 'outline') {
-      back.paint(canvas, Offset(left, pad));
-    }
-    front.paint(canvas, Offset(left, pad));
-
-    final image = await recorder.endRecording().toImage(width, height);
+    final image = await recorder.endRecording().toImage(
+          width,
+          frameHeight * frames,
+        );
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     image.dispose();
     if (data == null) {
@@ -222,6 +351,10 @@ class TextRender {
     }
 
     await File(outPath).writeAsBytes(data.buffer.asUint8List());
-    return outPath;
+    return WordStrip(
+      path: outPath,
+      frameHeight: frameHeight,
+      wordCount: frames,
+    );
   }
 }

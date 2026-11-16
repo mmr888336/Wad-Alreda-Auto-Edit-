@@ -19,6 +19,7 @@ import 'text_render.dart';
 import 'caption_style_engine.dart';
 import 'visual_filter_engine.dart';
 import 'project_store.dart';
+import 'word_caption_planner.dart';
 
 class EnhanceResult {
   final String videoPath;
@@ -619,6 +620,8 @@ class Enhancer {
 
     final caps = <Caption>[];
     final capFiles = <String>[];
+    // Caption index -> film strip with one frame per word (active-word highlight).
+    final wordStrips = <int, WordStrip>{};
     String? hookFile;
     if (analysis != null) {
       try {
@@ -643,8 +646,30 @@ class Enhancer {
             temps.add(path);
             caps.add(analysis.captions[i]);
             capFiles.add(path);
+
+            final captionSeconds = analysis.captions[i].end - analysis.captions[i].start;
+            if (WordCaptionPlanner.canHighlight(analysis.captions[i].text, captionSeconds)) {
+              try {
+                final strip = await TextRender.pngWordStrip(
+                  text: analysis.captions[i].text,
+                  outPath: '$dir/capw_${stamp}_$i.png',
+                  width: outW,
+                  fontSize: outW * 0.062,
+                  fill: Colors.white,
+                  fontFamily: captionFont,
+                  style: captionStyle,
+                );
+                temps.add(strip.path);
+                wordStrips[caps.length - 1] = strip;
+              } catch (_) {
+                // The plain caption is still used for this line.
+              }
+            }
           }
           if (caps.isEmpty) notes.add('لم يتم التعرف على كلام مناسب للكابشن.');
+          if (wordStrips.isNotEmpty) {
+            notes.add('تم تفعيل إبراز الكلمة التي يتم نطقها في ${wordStrips.length} كابشن.');
+          }
         }
         if (s.hook && analysis.title.isNotEmpty) {
           await TextRender.prepareFont(
@@ -814,7 +839,24 @@ class Enhancer {
       for (final layer in captionLayers) {
         final idx = inputs.length;
         final duration = math.max(0.1, layer.duration).toDouble();
-        inputs.add('-loop 1 -framerate 30 -t ${_f(duration)} -i "${layer.sourcePath}"');
+
+        // Active-word highlight: when a film strip exists for this caption,
+        // crop the frame of the spoken word over time. The strip has the same
+        // frame size as the plain caption, so every motion filter, scale and
+        // position below stays identical.
+        final captionNumber = int.tryParse(layer.id.replaceFirst('caption_', ''));
+        final strip = captionNumber == null ? null : wordStrips[captionNumber];
+        final cues = strip == null
+            ? const <WordCue>[]
+            : WordCaptionPlanner.plan(text: layer.text ?? '', duration: duration);
+        final activeStrip = (strip != null && cues.length == strip.wordCount) ? strip : null;
+
+        final inputPath = activeStrip != null ? activeStrip.path : layer.sourcePath;
+        inputs.add('-loop 1 -framerate 30 -t ${_f(duration)} -i "$inputPath"');
+        final cropStage = activeStrip != null
+            ? '${WordCaptionPlanner.cropFilter(frameHeight: activeStrip.frameHeight, cues: cues)},'
+            : '';
+
         final label = 'caption_motion_$captionIndex';
         final motionFilter = motionPlan.overlayInputFilter(
           duration: duration,
@@ -822,7 +864,7 @@ class Enhancer {
           text: layer.text ?? '',
         );
         final scaleValue = layer.ffmpegExpression(TransformProperty.scale, fallback: '1');
-        chains.add("[$idx:v]$motionFilter,scale=w='max(2,iw*($scaleValue))':h='max(2,ih*($scaleValue))':eval=frame[$label]");
+        chains.add("[$idx:v]$cropStage$motionFilter,scale=w='max(2,iw*($scaleValue))':h='max(2,ih*($scaleValue))':eval=frame[$label]");
         final xValue = layer.ffmpegExpression(TransformProperty.x, fallback: '0.5');
         final yValue = layer.ffmpegExpression(TransformProperty.y, fallback: '0.8');
         final x = 'main_w*($xValue)-overlay_w/2';
