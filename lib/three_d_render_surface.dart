@@ -1,12 +1,19 @@
-
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show PlatformViewHitTestBehavior;
+import 'package:flutter/services.dart';
 
 import 'package:filament_renderer/filament_renderer.dart';
 
 /// A real native Filament SurfaceView for the automatic 3D pipeline.
+///
+/// The view is embedded with Hybrid Composition. The native view contains a
+/// SurfaceView, and a plain [AndroidView] falls back to a virtual display for
+/// such views, where the SurfaceView never gets a frame that PixelCopy can
+/// read (PixelCopy then fails with code 3, ERROR_SOURCE_NO_DATA). With Hybrid
+/// Composition the SurfaceView lives in the real window, so the capture works.
 class ThreeDRenderSurface extends StatelessWidget {
   const ThreeDRenderSurface({
     super.key,
@@ -40,10 +47,39 @@ class ThreeDRenderSurface extends StatelessWidget {
       height: height,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(14),
-        child: AndroidView(
+        child: PlatformViewLink(
           viewType: FilamentRenderer.modelViewType,
-          onPlatformViewCreated: onPlatformViewCreated,
-          hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+          surfaceFactory:
+              (BuildContext context, PlatformViewController controller) {
+            return AndroidViewSurface(
+              controller: controller as AndroidViewController,
+              gestureRecognizers:
+                  const <Factory<OneSequenceGestureRecognizer>>{},
+              hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+            );
+          },
+          onCreatePlatformView: (PlatformViewCreationParams params) {
+            final controller = PlatformViewsService.initSurfaceAndroidView(
+              id: params.id,
+              viewType: FilamentRenderer.modelViewType,
+              layoutDirection: TextDirection.ltr,
+              creationParams: null,
+              creationParamsCodec: const StandardMessageCodec(),
+              onFocus: () {
+                params.onFocusChanged(true);
+              },
+            );
+
+            controller.addOnPlatformViewCreatedListener(
+              params.onPlatformViewCreated,
+            );
+            controller.addOnPlatformViewCreatedListener(
+              onPlatformViewCreated,
+            );
+            controller.create();
+
+            return controller;
+          },
         ),
       ),
     );

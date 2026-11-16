@@ -78,6 +78,18 @@ class _CoverFrameMetrics {
 /// After silence cutting: captions, hook, B-roll, effects, audio cleanup,
 /// cover generation and final export.
 class Enhancer {
+  /// Where the final FFmpeg encode starts inside this stage's progress bar.
+  /// Everything before it (audio extraction, AI analysis, caption rendering,
+  /// B-roll) reports into 0..[_encodeStart].
+  static const double _encodeStart = 0.40;
+
+  /// Longest the AI analysis (transcription + title) may take. After that the
+  /// export continues without captions instead of waiting forever.
+  static const Duration _analysisBudget = Duration(minutes: 8);
+
+  /// Longest the whole B-roll download + safety check may take.
+  static const Duration _brollBudget = Duration(minutes: 4);
+
   static String _f(double v) => v.toStringAsFixed(2);
 
   static void _checkCancel() {
@@ -563,8 +575,32 @@ class Enhancer {
     final temps = <String>[];
     final dir = File(cutPath).parent.path;
     final stamp = DateTime.now().millisecondsSinceEpoch;
+
+    // Progress of this whole stage (0..1). Before this fix only the final
+    // FFmpeg encode reported progress, so the export bar stayed at the value
+    // where silence cutting ended (12%) for the whole AI analysis, caption
+    // rendering and B-roll download. Every stage now reports as it goes and
+    // the final encode owns the rest of the bar. Values never go backwards.
+    var lastReported = 0.0;
+    void report(double value) {
+      if (value.isNaN) return;
+      final next = value.clamp(0.0, 1.0).toDouble();
+      if (next <= lastReported) return;
+      lastReported = next;
+      onProgress?.call(next);
+    }
+
+    void reportEncode(double value) {
+      final unit = value.isNaN ? 0.0 : value.clamp(0.0, 1.0).toDouble();
+      report(_encodeStart + unit * (1.0 - _encodeStart));
+    }
+
+    final void Function(double)? encodeProgress =
+        onProgress == null ? null : reportEncode;
+
     onStatus?.call('جاري فحص الفيديو...');
     final info = await SilenceCutter.probe(cutPath);
+    report(0.02);
     final short = math.min(info.w, info.h);
     final shouldUpscaleTo2k = s.upscale2k && short >= 720 && short < 1440;
     final targetShort = shouldUpscaleTo2k ? 1440 : short;
@@ -596,7 +632,23 @@ class Enhancer {
         temps.add(wav);
         final ok = await _run('-y -i "$cutPath" -vn -ac 1 -ar 16000 -c:a pcm_s16le "$wav"');
         if (!ok) throw Exception('تعذر استخراج الصوت من الفيديو.');
-        final res = await Analyzer.run(s, wav, cutSec, cutTimes: cutTimes, onStatus: onStatus);
+        report(0.04);
+        final res = await Analyzer.run(
+          s,
+          wav,
+          cutSec,
+          cutTimes: cutTimes,
+          onStatus: onStatus,
+          onProgress: (value) {
+            if (value.isNaN) return;
+            report(0.04 + 0.16 * value.clamp(0.0, 1.0).toDouble());
+          },
+        ).timeout(
+          _analysisBudget,
+          onTimeout: () => throw Exception(
+            'انتهت مهلة التحليل بالذكاء الاصطناعي؛ تم التصدير بدون الكابشن والعنوان.',
+          ),
+        );
         an = res;
         notes.addAll(res.notes);
       } catch (e) {
@@ -605,6 +657,7 @@ class Enhancer {
       }
     }
     final analysis = an;
+    report(0.20);
 
     final profileText = [
       analysis?.title ?? '',
@@ -672,6 +725,7 @@ class Enhancer {
                 // The plain caption is still used for this line.
               }
             }
+            report(0.20 + 0.08 * (i + 1) / analysis.captions.length);
           }
           if (caps.isEmpty) notes.add('لم يتم التعرف على كلام مناسب للكابشن.');
           if (wordStrips.isNotEmpty) {
@@ -701,6 +755,7 @@ class Enhancer {
         notes.add('تعذر رسم النصوص: $e');
       }
     }
+    report(0.28);
 
     final brolls = <_Broll>[];
     if (s.broll && analysis != null && analysis.broll.isNotEmpty) {
@@ -712,15 +767,22 @@ class Enhancer {
           final ideas = analysis.broll
               .where((b) => b.start >= 3.5 && b.end <= cutSec - 0.3 && b.end - b.start >= 1.5)
               .toList()..sort((a, b) => a.start.compareTo(b.start));
+          final brollDeadline = DateTime.now().add(_brollBudget);
           var lastEnd = 0.0;
           var index = 0;
           for (final idea in ideas) {
             if (brolls.length >= editingProfile.maxBroll) break;
             if (idea.start < lastEnd + 1.0) continue;
             _checkCancel();
+            if (DateTime.now().isAfter(brollDeadline)) {
+              notes.add('استغرق تحميل B-roll وقتاً طويلاً؛ تم الاكتفاء بما تم تجهيزه.');
+              break;
+            }
+            report(0.28 + 0.08 * index / math.max(1, ideas.length));
             onStatus?.call('جاري تحميل وفحص B-roll (${brolls.length + 1})...');
             String? got;
             for (var attempt = 0; attempt < 3 && got == null; attempt++) {
+              if (DateTime.now().isAfter(brollDeadline)) break;
               final animation = attempt == 2;
               final out = '$dir/broll_${stamp}_${index}_$attempt.mp4';
               final file = await BrollFetcher.fetch(s, idea.query, portrait, out, index + attempt, animation: animation);
@@ -746,6 +808,7 @@ class Enhancer {
         }
       }
     }
+    report(0.36);
 
     String? whoosh;
     if (s.sfx && s.soundEffectStyle != 'none') {
@@ -762,6 +825,7 @@ class Enhancer {
         notes.add('تعذر توليد المؤثر الصوتي: $e');
       }
     }
+    report(0.38);
 
     // Phase 5: pop-in keyword callouts (one strong word, big, mid screen).
     final callouts = <_CalloutFile>[];
@@ -819,6 +883,7 @@ class Enhancer {
         notes.add('تعذر تجهيز الكلمات المفتاحية: $e');
       }
     }
+    report(0.39);
 
     onStatus?.call('جاري بناء طبقات المونتاج والحركات...');
     final timelineProject = _createTimelineProject(
@@ -1040,12 +1105,12 @@ class Enhancer {
     onStatus?.call(s.maximumQuality
         ? 'جاري التصدير بأعلى جودة ${outW}×${outH} — قد يستغرق وقتاً أطول...'
         : 'جاري التصدير ${outW}×${outH} مع التحسينات...');
-    var ok = await SilenceCutter.encode(buildCommand(audioFx: true, visFx: true), cutSec, onProgress);
+    var ok = await SilenceCutter.encode(buildCommand(audioFx: true, visFx: true), cutSec, encodeProgress);
     if (!ok) {
       _checkCancel();
       notes.add('بعض الفلاتر المتقدمة ما اشتغلت؛ صدّرت بدونها مع الكابشن والـ B-roll.');
       onStatus?.call('جاري التصدير بدون الفلاتر المتقدمة...');
-      ok = await SilenceCutter.encode(buildCommand(audioFx: false, visFx: false), cutSec, onProgress);
+      ok = await SilenceCutter.encode(buildCommand(audioFx: false, visFx: false), cutSec, encodeProgress);
     }
     if (!ok) {
       _checkCancel();
@@ -1056,13 +1121,13 @@ class Enhancer {
           : '-c:v libx264 -preset veryfast -crf 21 -maxrate ${vK}k -bufsize ${vK * 2}k';
       final fallbackAudioEncoder = s.maximumQuality ? '-c:a aac -b:a 192k' : '-c:a aac -b:a 128k';
       final simple = '-y -i "$cutPath" -vf "scale=$outW:$outH:flags=lanczos" $fallbackVideoEncoder -pix_fmt yuv420p $fallbackAudioEncoder -movflags +faststart "$out"';
-      ok = await SilenceCutter.encode(simple, cutSec, onProgress);
+      ok = await SilenceCutter.encode(simple, cutSec, encodeProgress);
       if (!ok) {
         _checkCancel();
         final simple2 = s.maximumQuality
             ? '-y -i "$cutPath" -vf "scale=$outW:$outH" -c:v mpeg4 -q:v 2 -c:a aac -b:a 192k "$out"'
             : '-y -i "$cutPath" -vf "scale=$outW:$outH" -c:v mpeg4 -b:v ${vK}k -c:a aac -b:a 128k "$out"';
-        ok = await SilenceCutter.encode(simple2, cutSec, onProgress);
+        ok = await SilenceCutter.encode(simple2, cutSec, encodeProgress);
       }
     }
     _checkCancel();
