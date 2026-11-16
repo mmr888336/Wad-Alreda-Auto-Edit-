@@ -1,0 +1,82 @@
+import 'three_d_asset_service.dart';
+
+/// A small, reliable model from the Khronos glTF sample library (direct GLB
+/// files on GitHub). It is the safety net used when the online libraries
+/// return nothing for a scene.
+class KhronosModel {
+  final String name;
+  final List<String> tags;
+
+  const KhronosModel(this.name, this.tags);
+
+  String get url =>
+      'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/$name/glTF-Binary/$name.glb';
+}
+
+class KhronosModelCatalog {
+  KhronosModelCatalog._();
+
+  static const List<KhronosModel> models = <KhronosModel>[
+    KhronosModel('Lantern', <String>['lantern', 'lamp', 'light', 'candle', 'crescent']),
+    KhronosModel('Avocado', <String>['avocado', 'fruit', 'food']),
+    KhronosModel('AntiqueCamera', <String>['camera', 'photo', 'video', 'film', 'antique']),
+    KhronosModel('BoomBox', <String>['radio', 'speaker', 'music', 'boombox', 'sound', 'audio', 'microphone']),
+    KhronosModel('BarramundiFish', <String>['fish', 'sea', 'ocean', 'animal']),
+    KhronosModel('DamagedHelmet', <String>['helmet', 'robot', 'space', 'technology', 'shield']),
+    KhronosModel('Duck', <String>['duck', 'bird', 'toy', 'animal']),
+    KhronosModel('Fox', <String>['fox', 'animal', 'nature', 'wildlife']),
+    KhronosModel('WaterBottle', <String>['bottle', 'water', 'drink']),
+    KhronosModel('SheenChair', <String>['chair', 'furniture', 'seat', 'room', 'house']),
+    KhronosModel('ToyCar', <String>['car', 'toy', 'vehicle']),
+    KhronosModel('CesiumMilkTruck', <String>['truck', 'vehicle', 'delivery', 'transport']),
+    KhronosModel('Buggy', <String>['buggy', 'car', 'vehicle', 'road']),
+    KhronosModel('BrainStem', <String>['robot', 'machine', 'technology', 'brain']),
+    KhronosModel('ABeautifulGame', <String>['chess', 'game', 'strategy', 'board', 'scale', 'balance']),
+    KhronosModel('GlamVelvetSofa', <String>['sofa', 'couch', 'furniture', 'house']),
+    KhronosModel('MosquitoInAmber', <String>['amber', 'mosquito', 'insect', 'time', 'hourglass', 'clock', 'crystal', 'gold', 'coins']),
+  ];
+
+  /// Models used when no keyword matches (a warm, neutral first choice).
+  static const List<String> fallbackNames = <String>[
+    'Lantern',
+    'AntiqueCamera',
+    'DamagedHelmet',
+    'MosquitoInAmber',
+  ];
+
+  /// Models whose tags match the keywords, best match first.
+  static List<KhronosModel> match(List<String> keywords) {
+    final wanted = keywords.map((k) => k.toLowerCase().trim()).where((k) => k.isNotEmpty).toList();
+    if (wanted.isEmpty) return const <KhronosModel>[];
+
+    final scored = <MapEntry<KhronosModel, int>>[];
+    for (final model in models) {
+      var score = 0;
+      for (var i = 0; i < wanted.length; i++) {
+        final keyword = wanted[i];
+        final hit = model.tags.any((tag) => tag == keyword || keyword.contains(tag) || tag.contains(keyword));
+        // Earlier keywords are more relevant.
+        if (hit) score += wanted.length - i;
+      }
+      if (score > 0) scored.add(MapEntry<KhronosModel, int>(model, score));
+    }
+
+    scored.sort((a, b) => b.value.compareTo(a.value));
+    return scored.map((entry) => entry.key).toList();
+  }
+
+  static KhronosModel fallbackFor(int index) {
+    final name = fallbackNames[index.abs() % fallbackNames.length];
+    return models.firstWhere((model) => model.name == name);
+  }
+
+  static ThreeDAsset asset(KhronosModel model) {
+    return ThreeDAsset(
+      id: 'khronos_${model.name}',
+      title: 'Khronos ${model.name}',
+      provider: ThreeDAssetProvider.polyHaven,
+      license: 'Khronos sample asset',
+      downloadUrl: model.url,
+    );
+  }
+}

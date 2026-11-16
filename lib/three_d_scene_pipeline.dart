@@ -5,10 +5,12 @@ import 'dart:math' as math;
 import 'package:filament_renderer/filament_renderer.dart';
 
 import 'filament_scene_exporter.dart';
+import 'khronos_model_catalog.dart';
 import 'person_anchored_compositor.dart';
 import 'person_tracking_service.dart';
 import 'settings.dart';
 import 'three_d_asset_service.dart';
+import 'three_d_query_planner.dart';
 import 'timeline_engine.dart';
 import 'visual_tracking_engine.dart';
 
@@ -41,7 +43,8 @@ class _ThreeDCue {
 /// Automatic 3D scene pipeline:
 /// - Reads real caption timestamps.
 /// - Creates scene windows.
-/// - Searches and downloads GLB assets.
+/// - Turns the spoken words into English search keywords.
+/// - Searches and downloads GLB assets (with a built-in safety net).
 /// - Loads each asset into the native Filament renderer.
 /// - Captures camera movement.
 /// - Tracks the main person (Phase 1) and anchors each 3D scene to them
@@ -51,10 +54,15 @@ class ThreeDScenePipeline {
   ThreeDScenePipeline._();
 
   static const int _maximumScenesPerExport = 8;
+  static const int _maximumAttemptsPerScene = 4;
 
   /// Phase 2 switch: follow the tracked person with the 3D scenes.
   /// Any failure falls back to the previous panel compositing.
   static bool personAnchoringEnabled = true;
+
+  /// When no library has a model for a scene, use a neutral built-in model
+  /// instead of leaving the scene without 3D.
+  static bool genericFallbackEnabled = true;
 
   static const List<String> _cameraModes = <String>[
     'orbit',
@@ -213,19 +221,51 @@ class ThreeDScenePipeline {
     return score;
   }
 
-  static ThreeDAsset? _chooseAsset(
-    List<ThreeDAsset> assets,
-    String query,
-  ) {
-    if (assets.isEmpty) return null;
+  /// Candidate models for one scene, best first: online libraries for the
+  /// first keyword that has results, then the built-in catalog.
+  static Future<List<ThreeDAsset>> _candidateAssets({
+    required ThreeDAssetService service,
+    required List<String> keywords,
+    required int sceneIndex,
+  }) async {
+    final candidates = <ThreeDAsset>[];
 
-    final ranked = List<ThreeDAsset>.from(assets)
-      ..sort(
-        (a, b) => _relevanceScore(b.title, query)
-            .compareTo(_relevanceScore(a.title, query)),
+    for (final keyword in keywords.take(4)) {
+      try {
+        final found = await service.search(keyword);
+        if (found.isEmpty) continue;
+
+        final ranked = List<ThreeDAsset>.from(found)
+          ..sort(
+            (a, b) => _relevanceScore(b.title, keyword)
+                .compareTo(_relevanceScore(a.title, keyword)),
+          );
+
+        candidates.addAll(ranked.take(3));
+        break;
+      } catch (_) {
+        continue;
+      }
+    }
+
+    candidates.addAll(
+      KhronosModelCatalog.match(keywords)
+          .take(2)
+          .map(KhronosModelCatalog.asset),
+    );
+
+    if (candidates.isEmpty && genericFallbackEnabled) {
+      candidates.add(
+        KhronosModelCatalog.asset(
+          KhronosModelCatalog.fallbackFor(sceneIndex),
+        ),
       );
+    }
 
-    return ranked.first;
+    final seen = <String>{};
+    return candidates
+        .where((asset) => seen.add('${asset.provider.name}:${asset.id}'))
+        .toList();
   }
 
   /// Waits for the actual Android Filament SurfaceView to render the GLB.
@@ -380,12 +420,21 @@ class ThreeDScenePipeline {
         );
 
         try {
-          final assets = await service.search(cue.query);
-          final asset = _chooseAsset(assets, cue.query);
+          final keywords = await ThreeDQueryPlanner.keywords(
+            settings,
+            cue.query,
+          );
 
-          if (asset == null) {
+          final candidates = await _candidateAssets(
+            service: service,
+            keywords: keywords,
+            sceneIndex: index,
+          );
+
+          if (candidates.isEmpty) {
             notes.add(
-              'لم يتم العثور على مجسم GLB مناسب للمشهد ${index + 1}.',
+              'لم يتم العثور على مجسم GLB مناسب للمشهد ${index + 1} '
+              '(${keywords.take(3).join('، ')}).',
             );
 
             if (service.warnings.isNotEmpty) {
@@ -395,56 +444,83 @@ class ThreeDScenePipeline {
             continue;
           }
 
-          onStatus?.call(
-            'جاري تنزيل المجسم: ${asset.title}...',
-          );
+          String? scenePath;
+          ThreeDAsset? usedAsset;
+          String? lastFailure;
 
-          final modelPath = await service.download(asset);
+          for (final asset in candidates.take(_maximumAttemptsPerScene)) {
+            try {
+              onStatus?.call(
+                'جاري تنزيل المجسم: ${asset.title}...',
+              );
 
-          onStatus?.call(
-            'جاري تحميل المجسم داخل محرك Filament...',
-          );
+              // Download + full GLB inspection: a bad file is rejected here.
+              final modelPath = await service.download(asset);
 
-          await FilamentRenderer.loadModelFromFile(
-            viewId: viewId,
-            filePath: modelPath,
-          );
+              onStatus?.call(
+                'جاري تحميل المجسم داخل محرك Filament...',
+              );
 
-          final cameraMode =
-              _cameraModes[index % _cameraModes.length];
+              await FilamentRenderer.loadModelFromFile(
+                viewId: viewId,
+                filePath: modelPath,
+              );
 
-          await FilamentRenderer.setCameraMotion(
-            viewId: viewId,
-            mode: cameraMode,
-          );
+              await FilamentRenderer.setCameraMotion(
+                viewId: viewId,
+                mode: _cameraModes[index % _cameraModes.length],
+              );
 
-          await _waitUntilRenderable(viewId);
+              // Let the new model render a few frames before capturing.
+              await Future<void>.delayed(
+                const Duration(milliseconds: 350),
+              );
 
-          onStatus?.call(
-            'جاري تصوير حركة الكاميرا للمشهد ${index + 1}...',
-          );
+              await _waitUntilRenderable(viewId);
 
-          final scenePath =
-              await FilamentSceneExporter.captureAndEncode(
-            viewId: viewId,
-            durationSeconds: cue.duration,
-            frameRate: 24,
-            width: 720,
-            height: 720,
-            onStatus: onStatus,
-          );
+              onStatus?.call(
+                'جاري تصوير حركة الكاميرا للمشهد ${index + 1}...',
+              );
 
-          final sceneFile = File(scenePath);
+              final capturedPath =
+                  await FilamentSceneExporter.captureAndEncode(
+                viewId: viewId,
+                durationSeconds: cue.duration,
+                frameRate: 24,
+                width: 720,
+                height: 720,
+                onStatus: onStatus,
+              );
 
-          if (!await sceneFile.exists() ||
-              await sceneFile.length() < 2048) {
-            throw FileSystemException(
-              '3D scene video was not created correctly.',
-              scenePath,
-            );
+              final sceneFile = File(capturedPath);
+
+              if (!await sceneFile.exists() ||
+                  await sceneFile.length() < 2048) {
+                throw FileSystemException(
+                  '3D scene video was not created correctly.',
+                  capturedPath,
+                );
+              }
+
+              temporaryDirectories.add(sceneFile.parent.path);
+              scenePath = capturedPath;
+              usedAsset = asset;
+              break;
+            } catch (error) {
+              lastFailure = '${asset.title}: $error';
+            }
           }
 
-          temporaryDirectories.add(sceneFile.parent.path);
+          if (scenePath == null || usedAsset == null) {
+            notes.add(
+              'تعذر تجهيز مجسم للمشهد ${index + 1}: ${lastFailure ?? 'غير معروف'}',
+            );
+            continue;
+          }
+
+          notes.add(
+            'مشهد ${index + 1}: ${keywords.take(3).join('، ')} ← ${usedAsset.title}',
+          );
 
           sceneClips.add(
             ThreeDSceneClip(

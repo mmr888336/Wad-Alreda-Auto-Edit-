@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
+import 'glb_inspector.dart';
 import 'settings.dart';
 
 enum ThreeDAssetProvider { sketchfab, polyHaven, huggingFace }
@@ -53,6 +54,10 @@ class ThreeDAsset {
 /// Connects the credentials already stored by AppSettings to real 3D asset APIs.
 /// Only self-contained GLB downloads are accepted in this phase; loose glTF/ZIP
 /// packages are rejected instead of being passed to Filament as broken files.
+///
+/// Every downloaded file is inspected (GlbInspector) before it is returned, so
+/// a corrupt, unsupported or too heavy model is rejected in Dart instead of
+/// crashing the native 3D engine.
 class ThreeDAssetService {
   ThreeDAssetService({required this.settings, http.Client? client})
       : _client = client ?? http.Client();
@@ -61,7 +66,7 @@ class ThreeDAssetService {
   final http.Client _client;
   final List<String> warnings = <String>[];
 
-  static const int maxModelBytes = 80 * 1024 * 1024;
+  static const int maxModelBytes = GlbInspector.maxFileBytes;
 
   static bool isValidGlb(Uint8List bytes) {
     if (bytes.length < 20) return false;
@@ -117,6 +122,8 @@ class ThreeDAssetService {
       'downloadable': 'true',
       'q': query,
       'count': '8',
+      // Heavy meshes are rejected later anyway; do not even list them.
+      'max_face_count': '200000',
     });
     final response = await _client.get(uri, headers: {
       'Authorization': 'Token $token',
@@ -347,12 +354,22 @@ class ThreeDAssetService {
     if (streamed.statusCode != 200) {
       throw HttpException('فشل تنزيل ${asset.providerLabel}: HTTP ${streamed.statusCode}');
     }
+    final declared = streamed.contentLength;
+    if (declared != null && declared > maxModelBytes) {
+      throw StateError(
+        'حجم المجسم أكبر من الحد الآمن للهاتف (${maxModelBytes ~/ (1024 * 1024)} MB).',
+      );
+    }
+
     final directory = await getApplicationSupportDirectory();
     final modelDirectory = Directory('${directory.path}/WadAlredaStudio/3DModels');
     await modelDirectory.create(recursive: true);
     final safeName = asset.id.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
     final output = File('${modelDirectory.path}/${asset.provider.name}_$safeName.glb');
-    final sink = output.openWrite();
+    // Download to a temporary name first so a half-written file never
+    // replaces a good one and is never mistaken for a finished model.
+    final partial = File('${output.path}.part');
+    final sink = partial.openWrite();
     var total = 0;
     try {
       await for (final chunk in streamed.stream) {
@@ -365,21 +382,21 @@ class ThreeDAssetService {
       await sink.flush();
     } catch (_) {
       await sink.close();
-      if (await output.exists()) await output.delete();
+      if (await partial.exists()) await partial.delete();
       rethrow;
     }
     await sink.close();
 
-    final handle = await output.open();
-    final head = await handle.read(12);
-    await handle.close();
-    if (total < 20 || head.length < 12 ||
-        head[0] != 0x67 || head[1] != 0x6c || head[2] != 0x54 || head[3] != 0x46 ||
-        ByteData.sublistView(head).getUint32(4, Endian.little) != 2 ||
-        ByteData.sublistView(head).getUint32(8, Endian.little) != total) {
-      await output.delete();
-      throw FormatException('الملف المنزّل ليس GLB صالحاً بإصدار 2.');
+    // Full inspection: header, declared length, required extensions, vertex
+    // count and estimated texture memory.
+    final report = await GlbInspector.inspectFile(partial.path);
+    if (!report.isSafe) {
+      await partial.delete();
+      throw StateError(report.rejection ?? 'الملف المنزّل ليس GLB صالحاً.');
     }
+
+    if (await output.exists()) await output.delete();
+    await partial.rename(output.path);
     return output.path;
   }
 
