@@ -91,8 +91,6 @@ class TextMotionEngine {
         .any((word) => emphasisWords.contains(word));
   }
 
-  static String _n(double value) => value.toStringAsFixed(3);
-
   /// Builds local-time scale/rotation filters for one caption or title image.
   ///
   /// The image starts at t=0 because the caller applies setpts after this
