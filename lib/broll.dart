@@ -16,9 +16,20 @@ import 'settings.dart';
 /// - Prefer the largest usable rendition of a selected result, then fall back
 ///   to smaller renditions if a download fails or exceeds the size ceiling.
 /// - Keep the existing 20 MB per-clip ceiling to protect mobile data/storage.
+///
+/// Downloads are streamed: a rendition larger than the ceiling is abandoned
+/// as soon as its size is known (or exceeded) instead of being downloaded in
+/// full first, and one fetch has a total time budget, so a slow connection
+/// can no longer freeze the export for minutes.
 class BrollFetcher {
   static const int maxClipBytes = 20 * 1024 * 1024;
   static const int _candidatePoolSize = 3;
+
+  /// Total time one [fetch] may spend downloading (all renditions together).
+  static const Duration _downloadBudget = Duration(seconds: 75);
+
+  /// A download that receives nothing for this long is given up.
+  static const Duration _idleTimeout = Duration(seconds: 20);
 
   static const List<String> _blocked = <String>[
     'woman',
@@ -326,6 +337,76 @@ class BrollFetcher {
     return ranked[pick.abs() % poolLength];
   }
 
+  static Future<void> _discard(File file) async {
+    try {
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
+  }
+
+  /// Streams one rendition to [outPath].
+  ///
+  /// Returns false (and leaves no file behind) when the server answers with an
+  /// error, when the clip is larger than [maxClipBytes] (known from the
+  /// Content-Length header or reached while receiving), when the connection
+  /// goes idle, or when [allowed] runs out.
+  static Future<bool> _download(
+    String url,
+    String outPath,
+    Duration allowed,
+  ) async {
+    final client = http.Client();
+    final clock = Stopwatch()..start();
+    final output = File(outPath);
+
+    try {
+      final response = await client
+          .send(http.Request('GET', Uri.parse(url)))
+          .timeout(_idleTimeout);
+
+      if (response.statusCode != 200) return false;
+
+      // A clip that is too big is skipped at once, before any of it is read.
+      final declared = response.contentLength;
+      if (declared != null && declared > maxClipBytes) return false;
+
+      await output.parent.create(recursive: true);
+
+      final sink = output.openWrite();
+      var received = 0;
+      var aborted = false;
+
+      try {
+        await for (final chunk in response.stream.timeout(_idleTimeout)) {
+          received += chunk.length;
+
+          if (received > maxClipBytes || clock.elapsed > allowed) {
+            aborted = true;
+            break;
+          }
+
+          sink.add(chunk);
+        }
+      } finally {
+        await sink.close();
+      }
+
+      if (aborted || received == 0) {
+        await _discard(output);
+        return false;
+      }
+
+      if (await output.exists() && await output.length() > 0) return true;
+
+      await _discard(output);
+      return false;
+    } catch (_) {
+      await _discard(output);
+      return false;
+    } finally {
+      client.close();
+    }
+  }
+
   /// animation=true requests a 2D animation from Pixabay (requires Pixabay key).
   static Future<String?> fetch(
     AppSettings settings,
@@ -409,27 +490,14 @@ class BrollFetcher {
             .toList();
       }
 
+      final budget = Stopwatch()..start();
+
       for (final url in candidates) {
-        try {
-          final download = await http
-              .get(Uri.parse(url))
-              .timeout(const Duration(seconds: 90));
+        final remaining = _downloadBudget - budget.elapsed;
+        if (remaining <= Duration.zero) break;
 
-          if (download.statusCode != 200 ||
-              download.bodyBytes.isEmpty ||
-              download.bodyBytes.length > maxClipBytes) {
-            continue;
-          }
-
-          final output = File(outPath);
-          await output.parent.create(recursive: true);
-          await output.writeAsBytes(download.bodyBytes, flush: true);
-          if (await output.exists() && await output.length() > 0) {
-            return outPath;
-          }
-        } catch (_) {
-          // Try the next rendition instead of abandoning the B-roll search.
-        }
+        // Try the next rendition instead of abandoning the B-roll search.
+        if (await _download(url, outPath, remaining)) return outPath;
       }
 
       return null;
