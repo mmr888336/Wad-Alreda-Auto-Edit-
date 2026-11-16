@@ -151,6 +151,10 @@ class _FilamentTestPageState extends State<FilamentTestPage> {
     }
   }
 
+  /// Download, engine load and camera setup are three separate stages, each
+  /// with its own message. Previously one catch-all reported "import failed"
+  /// even when the GLB had downloaded and passed inspection and only the
+  /// Filament load (or the camera mode) failed afterwards.
   Future<void> _loadAsset(ThreeDAsset asset) async {
     final id = _viewId;
     final service = _assetService;
@@ -160,19 +164,46 @@ class _FilamentTestPageState extends State<FilamentTestPage> {
       _message = 'جاري تنزيل ${asset.title} والتحقق من ملف GLB...';
     });
     try {
-      final path = await service.download(asset);
+      // Stage 1: download + GLB inspection.
+      final String path;
+      try {
+        path = await service.download(asset);
+      } catch (error) {
+        if (mounted) setState(() => _message = 'فشل تنزيل المجسم أو فحص ملف GLB: $error');
+        return;
+      }
       if (!mounted) return;
-      setState(() => _message = 'تم التنزيل. جاري تحميل المجسم داخل محرك Filament...');
-      await FilamentRenderer.loadModelFromFile(viewId: id, filePath: path);
-      await FilamentRenderer.setCameraMotion(viewId: id, mode: _cameraMode);
+      setState(() => _message = 'تم تنزيل الملف وفحصه بنجاح. جاري تحميل المجسم داخل محرك Filament...');
+
+      // Stage 2: load into the native engine.
+      try {
+        await FilamentRenderer.loadModelFromFile(viewId: id, filePath: path);
+      } catch (error) {
+        if (mounted) {
+          setState(() => _message =
+              'تم تنزيل ملف GLB بنجاح، لكن محرك Filament لم يستطع تحميله: $error');
+        }
+        return;
+      }
+      if (!mounted) return;
+      setState(() => _activeModelName = asset.title);
+
+      // Stage 3: camera motion. The model is already loaded at this point.
+      try {
+        await FilamentRenderer.setCameraMotion(viewId: id, mode: _cameraMode);
+      } catch (error) {
+        if (mounted) {
+          setState(() => _message =
+              'تم تنزيل المجسم وتحميله من ${asset.providerLabel}، لكن تعذر تطبيق حركة الكاميرا: $error');
+        }
+        await _refreshDiagnostics();
+        return;
+      }
       if (!mounted) return;
       setState(() {
-        _activeModelName = asset.title;
         _message = 'تم استيراد المجسم الحقيقي من ${asset.providerLabel}. اختر حركة الكاميرا ثم صدّر المشهد.';
       });
       await _refreshDiagnostics();
-    } catch (error) {
-      if (mounted) setState(() => _message = 'تعذر استيراد المجسم: $error');
     } finally {
       if (mounted) setState(() => _working = false);
     }
