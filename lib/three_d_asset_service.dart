@@ -317,7 +317,15 @@ class ThreeDAssetService {
     return null;
   }
 
-  Future<String> download(ThreeDAsset asset) async {
+  /// Downloads [asset] and inspects it.
+  ///
+  /// [onInspecting] is called once the file is fully downloaded and the GLB
+  /// inspection is about to start, so a caller can log the download and the
+  /// inspection as two separate stages.
+  Future<String> download(
+    ThreeDAsset asset, {
+    void Function()? onInspecting,
+  }) async {
     String url = asset.downloadUrl ?? '';
     final headers = <String, String>{'Accept': '*/*'};
 
@@ -386,6 +394,9 @@ class ThreeDAssetService {
       rethrow;
     }
     await sink.close();
+
+    // The file is fully downloaded: from here on only inspection can fail.
+    onInspecting?.call();
 
     // Full inspection: header, declared length, required extensions, vertex
     // count and estimated texture memory.

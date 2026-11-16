@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:filament_renderer/filament_renderer.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
 import 'filament_scene_exporter.dart';
 import 'khronos_model_catalog.dart';
@@ -12,6 +12,7 @@ import 'person_tracking_service.dart';
 import 'settings.dart';
 import 'three_d_asset_service.dart';
 import 'three_d_query_planner.dart';
+import 'three_d_stage_log.dart';
 import 'timeline_engine.dart';
 import 'visual_tracking_engine.dart';
 
@@ -20,10 +21,16 @@ class ThreeDScenePipelineResult {
   final int scenesRendered;
   final List<String> notes;
 
+  /// Stage-by-stage log of this export (search, download, GLB inspection,
+  /// Filament load, capture, compositing). Null only for results created
+  /// outside the pipeline.
+  final ThreeDExportSummary? summary;
+
   const ThreeDScenePipelineResult({
     required this.applied,
     required this.scenesRendered,
     this.notes = const <String>[],
+    this.summary,
   });
 }
 
@@ -52,9 +59,11 @@ class _ThreeDCue {
 ///   (Phase 2); scenes that cannot be anchored keep the old panel.
 /// - Composites rendered scenes into the exported video.
 ///
-/// Every failed attempt is reported with the stage it failed in (download,
-/// Filament load, camera, readiness, capture) so a problem is never blamed on
-/// the wrong step.
+/// Every stage of every scene is logged (see [ThreeDExportSummary]): search,
+/// download, GLB inspection, Filament load, camera, readiness, capture and
+/// compositing. A failed attempt is reported with the stage it failed in, so
+/// a problem is never blamed on the wrong step. The log of the latest export
+/// is kept in [lastExportSummary].
 class ThreeDScenePipeline {
   ThreeDScenePipeline._();
 
@@ -68,6 +77,9 @@ class ThreeDScenePipeline {
   /// When no library has a model for a scene, use a neutral built-in model
   /// instead of leaving the scene without 3D.
   static bool genericFallbackEnabled = true;
+
+  /// Stage log of the most recent [apply] call (also when it ended early).
+  static ThreeDExportSummary? lastExportSummary;
 
   static const List<String> _cameraModes = <String>[
     'orbit',
@@ -391,39 +403,49 @@ class ThreeDScenePipeline {
     final sceneClips = <ThreeDSceneClip>[];
     final temporaryDirectories = <String>{};
 
+    // Every stage of this export is recorded here and printed as it happens.
+    final summary = ThreeDExportSummary(
+      onEvent: (event) => debugPrint('[3D] ${event.toLine()}'),
+    );
+    lastExportSummary = summary;
+
     String? compositePath;
+    Stopwatch? compositeWatch;
 
     if (!settings.online3DAssetsEnabled) {
-      return const ThreeDScenePipelineResult(
+      return ThreeDScenePipelineResult(
         applied: false,
         scenesRendered: 0,
-        notes: <String>[
+        notes: const <String>[
           'مصادر المجسمات ثلاثية الأبعاد معطلة من الإعدادات.',
         ],
+        summary: summary,
       );
     }
 
     final sourceFile = File(videoPath);
 
     if (!await sourceFile.exists()) {
-      return const ThreeDScenePipelineResult(
+      return ThreeDScenePipelineResult(
         applied: false,
         scenesRendered: 0,
-        notes: <String>[
+        notes: const <String>[
           'ملف الفيديو المطلوب لإضافة 3D غير موجود.',
         ],
+        summary: summary,
       );
     }
 
     final cues = _buildCues(timeline);
 
     if (cues.isEmpty) {
-      return const ThreeDScenePipelineResult(
+      return ThreeDScenePipelineResult(
         applied: false,
         scenesRendered: 0,
-        notes: <String>[
+        notes: const <String>[
           'لم تتوفر توقيتات كابشن كافية لتحديد مواضع مشاهد 3D.',
         ],
+        summary: summary,
       );
     }
 
@@ -432,12 +454,16 @@ class ThreeDScenePipeline {
     try {
       for (var index = 0; index < cues.length; index++) {
         final cue = cues[index];
+        final sceneNumber = index + 1;
 
         onStatus?.call(
-          'جاري تجهيز مشهد 3D ${index + 1} من ${cues.length} '
+          'جاري تجهيز مشهد 3D $sceneNumber من ${cues.length} '
           '(${cue.start.toStringAsFixed(1)}s – '
           '${cue.end.toStringAsFixed(1)}s)...',
         );
+
+        final searchWatch = Stopwatch()..start();
+        var searchDone = false;
 
         try {
           final keywords = await ThreeDQueryPlanner.keywords(
@@ -451,9 +477,22 @@ class ThreeDScenePipeline {
             sceneIndex: index,
           );
 
+          searchDone = true;
+
+          summary.record(
+            sceneNumber,
+            ThreeDStage.search,
+            ok: candidates.isNotEmpty,
+            elapsed: searchWatch.elapsed,
+            detail: candidates.isEmpty
+                ? 'لا توجد مرشحات (${keywords.take(3).join('، ')})'
+                : '${candidates.length} مرشح '
+                    '(${keywords.take(3).join('، ')})',
+          );
+
           if (candidates.isEmpty) {
             notes.add(
-              'لم يتم العثور على مجسم GLB مناسب للمشهد ${index + 1} '
+              'لم يتم العثور على مجسم GLB مناسب للمشهد $sceneNumber '
               '(${keywords.take(3).join('، ')}).',
             );
 
@@ -471,7 +510,25 @@ class ThreeDScenePipeline {
           for (final asset in candidates.take(_maximumAttemptsPerScene)) {
             // Tracks where the attempt is, so a failure is reported in the
             // stage that really failed.
-            var stage = 'تنزيل وفحص GLB';
+            var stage = ThreeDStage.download;
+            final stopwatch = Stopwatch()..start();
+
+            // Records the finished stage and moves on to the next one.
+            void finish(ThreeDStage done, {ThreeDStage? next}) {
+              summary.record(
+                sceneNumber,
+                done,
+                ok: true,
+                elapsed: stopwatch.elapsed,
+                detail: asset.title,
+              );
+
+              if (next != null) stage = next;
+
+              stopwatch
+                ..reset()
+                ..start();
+            }
 
             try {
               onStatus?.call(
@@ -479,9 +536,17 @@ class ThreeDScenePipeline {
               );
 
               // Download + full GLB inspection: a bad file is rejected here.
-              final modelPath = await service.download(asset);
+              // The service tells us when the download ends and the
+              // inspection begins, so they are logged as two stages.
+              final modelPath = await service.download(
+                asset,
+                onInspecting: () => finish(
+                  ThreeDStage.download,
+                  next: ThreeDStage.inspect,
+                ),
+              );
 
-              stage = 'تحميل المجسم في Filament';
+              finish(ThreeDStage.inspect, next: ThreeDStage.filamentLoad);
 
               onStatus?.call(
                 'جاري تحميل المجسم داخل محرك Filament...',
@@ -492,14 +557,14 @@ class ThreeDScenePipeline {
                 filePath: modelPath,
               );
 
-              stage = 'تشغيل حركة الكاميرا';
+              finish(ThreeDStage.filamentLoad, next: ThreeDStage.camera);
 
               await FilamentRenderer.setCameraMotion(
                 viewId: viewId,
                 mode: _cameraModes[index % _cameraModes.length],
               );
 
-              stage = 'انتظار جاهزية العرض';
+              finish(ThreeDStage.camera, next: ThreeDStage.ready);
 
               // Let the new model render a few frames before capturing.
               await Future<void>.delayed(
@@ -508,10 +573,10 @@ class ThreeDScenePipeline {
 
               await _waitUntilRenderable(viewId);
 
-              stage = 'التقاط المشهد';
+              finish(ThreeDStage.ready, next: ThreeDStage.capture);
 
               onStatus?.call(
-                'جاري تصوير حركة الكاميرا للمشهد ${index + 1}...',
+                'جاري تصوير حركة الكاميرا للمشهد $sceneNumber...',
               );
 
               final capturedPath =
@@ -534,20 +599,30 @@ class ThreeDScenePipeline {
                 );
               }
 
+              finish(ThreeDStage.capture);
+
               temporaryDirectories.add(sceneFile.parent.path);
               scenePath = capturedPath;
               usedAsset = asset;
               break;
             } catch (error) {
+              summary.record(
+                sceneNumber,
+                stage,
+                ok: false,
+                elapsed: stopwatch.elapsed,
+                detail: '${asset.title}: $error',
+              );
+
               attemptFailures.add(
-                '${asset.title} [مرحلة: $stage]: $error',
+                '${asset.title} [مرحلة: ${stage.label}]: $error',
               );
             }
           }
 
           if (scenePath == null || usedAsset == null) {
             notes.add(
-              'تعذر تجهيز مجسم للمشهد ${index + 1}: '
+              'تعذر تجهيز مجسم للمشهد $sceneNumber: '
               '${attemptFailures.isEmpty ? 'غير معروف' : attemptFailures.join(' | ')}',
             );
             continue;
@@ -555,13 +630,13 @@ class ThreeDScenePipeline {
 
           if (attemptFailures.isNotEmpty) {
             notes.add(
-              'مشهد ${index + 1}: فشلت ${attemptFailures.length} '
+              'مشهد $sceneNumber: فشلت ${attemptFailures.length} '
               'محاولة قبل النجاح (${attemptFailures.join(' | ')}).',
             );
           }
 
           notes.add(
-            'مشهد ${index + 1}: ${keywords.take(3).join('، ')} ← ${usedAsset.title}',
+            'مشهد $sceneNumber: ${keywords.take(3).join('، ')} ← ${usedAsset.title}',
           );
 
           sceneClips.add(
@@ -572,8 +647,18 @@ class ThreeDScenePipeline {
             ),
           );
         } catch (error) {
+          if (!searchDone) {
+            summary.record(
+              sceneNumber,
+              ThreeDStage.search,
+              ok: false,
+              elapsed: searchWatch.elapsed,
+              detail: '$error',
+            );
+          }
+
           notes.add(
-            'تعذر تجهيز مشهد 3D ${index + 1}: $error',
+            'تعذر تجهيز مشهد 3D $sceneNumber: $error',
           );
         }
       }
@@ -586,17 +671,22 @@ class ThreeDScenePipeline {
         notes.add(
           'لم يتم إنشاء أي مشهد 3D؛ تم الاحتفاظ بالفيديو الأصلي دون تغييره.',
         );
+        notes.add(summary.headline);
 
         return ThreeDScenePipelineResult(
           applied: false,
           scenesRendered: 0,
           notes: notes,
+          summary: summary,
         );
       }
 
       onStatus?.call(
         'جاري تركيب ${sceneClips.length} مشاهد 3D في الفيديو...',
       );
+
+      final watch = Stopwatch()..start();
+      compositeWatch = watch;
 
       String? anchoredPath;
 
@@ -664,6 +754,18 @@ class ThreeDScenePipeline {
         rethrow;
       }
 
+      summary.record(
+        0,
+        ThreeDStage.composite,
+        ok: true,
+        elapsed: watch.elapsed,
+        detail: anchoredPath != null
+            ? '${sceneClips.length} مشهد؛ مربوط بحركة الشخص'
+            : '${sceneClips.length} مشهد؛ تركيب عادي',
+      );
+
+      notes.add(summary.headline);
+
       onStatus?.call(
         'اكتمل دمج مشاهد 3D مع الفيديو النهائي.',
       );
@@ -672,14 +774,31 @@ class ThreeDScenePipeline {
         applied: true,
         scenesRendered: sceneClips.length,
         notes: notes,
+        summary: summary,
       );
     } catch (error) {
+      final failedWatch = compositeWatch;
+
+      // Only an error after compositing started belongs to that stage; the
+      // earlier stages are already logged one by one.
+      if (failedWatch != null) {
+        summary.record(
+          0,
+          ThreeDStage.composite,
+          ok: false,
+          elapsed: failedWatch.elapsed,
+          detail: '$error',
+        );
+      }
+
       notes.add('تعذر إكمال مرحلة دمج 3D: $error');
+      notes.add(summary.headline);
 
       return ThreeDScenePipelineResult(
         applied: false,
         scenesRendered: sceneClips.length,
         notes: notes,
+        summary: summary,
       );
     } finally {
       service.dispose();
