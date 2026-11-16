@@ -47,6 +47,9 @@ class Analyzer {
   static const double _chunkTarget = 120;
   static const double _chunkMax = 170;
 
+  /// أطول وقت ينتظره فحص صورة B-roll قبل اعتبارها غير آمنة وتجاوزها.
+  static const Duration _visionCheckBudget = Duration(seconds: 50);
+
   static double _num(dynamic v) =>
       v is num ? v.toDouble() : (double.tryParse('$v') ?? 0.0);
 
@@ -475,12 +478,15 @@ $transcript
     return AiRouter.run<Map<String, dynamic>>(steps);
   }
 
+  /// [onProgress] يستلم قيمة بين 0 و 1 أثناء التفريغ ثم كتابة العنوان، حتى
+  /// لا يبدو التصدير متوقفاً أثناء هذه المرحلة الطويلة.
   static Future<Analysis> run(
     AppSettings s,
     String wavPath,
     double durationSec, {
     List<double> cutTimes = const [],
     void Function(String)? onStatus,
+    void Function(double)? onProgress,
   }) async {
     if (!s.hasAnyAiKey) {
       throw Exception(
@@ -504,10 +510,15 @@ $transcript
     final temps = <String>[];
     var failedChunks = 0;
 
+    // التفريغ يأخذ 85% من شريط هذه المرحلة، والعنوان والوصف الباقي.
+    const transcribeShare = 0.85;
+
     try {
       for (var i = 0; i < chunks.length; i++) {
         final st = chunks[i][0];
         final len = chunks[i][1] - st;
+
+        onProgress?.call(transcribeShare * i / chunks.length);
 
         onStatus?.call(
           'جاري تفريغ الصوت (${i + 1}/${chunks.length})...',
@@ -555,6 +566,10 @@ $transcript
             'بدون كابشن. $e',
           );
         }
+
+        onProgress?.call(
+          transcribeShare * (i + 1) / chunks.length,
+        );
       }
     } finally {
       for (final p in temps) {
@@ -664,6 +679,8 @@ $transcript
       notes.add('تعذر كتابة العنوان والوصف وB-roll: $e');
     }
 
+    onProgress?.call(1.0);
+
     return Analysis(
       all,
       title,
@@ -687,6 +704,9 @@ $transcript
 
   /// فحص بصري لعدة صور في طلب واحد.
   /// يرجع قائمة بنفس ترتيب الصور.
+  ///
+  /// الفحص كله له مهلة ([_visionCheckBudget]) حتى لا يعلّق مزود بطيء التصدير؛
+  /// عند انتهاء المهلة يُرمى TimeoutException ويعامل المستدعي المقطع كغير آمن.
   static Future<List<bool>> containsWomanBatch(
     AppSettings s,
     List<String> imagePaths,
@@ -805,7 +825,8 @@ $transcript
       );
     }
 
-    final res = await AiRouter.run<List<bool>>(steps);
+    final res = await AiRouter.run<List<bool>>(steps)
+        .timeout(_visionCheckBudget);
 
     return res.value;
   }
