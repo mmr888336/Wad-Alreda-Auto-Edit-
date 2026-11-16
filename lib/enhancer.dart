@@ -11,6 +11,7 @@ import 'analyzer.dart';
 import 'broll.dart';
 import 'settings.dart';
 import 'editing_engine.dart';
+import 'keyword_callout_planner.dart';
 import 'motion_graphics.dart';
 import 'timeline_engine.dart';
 import 'sound_effect_generator.dart';
@@ -54,6 +55,12 @@ class _Broll {
   final double start;
   final double end;
   _Broll(this.path, this.start, this.end);
+}
+
+class _CalloutFile {
+  final KeywordCallout callout;
+  final String path;
+  const _CalloutFile(this.callout, this.path);
 }
 
 class _CoverFrameMetrics {
@@ -756,6 +763,63 @@ class Enhancer {
       }
     }
 
+    // Phase 5: pop-in keyword callouts (one strong word, big, mid screen).
+    final callouts = <_CalloutFile>[];
+    var calloutOvershoot = 0.12;
+    if (s.captions && caps.isNotEmpty && KeywordCalloutPlanner.enabled) {
+      try {
+        final maxCallouts = switch (motionPlan.mood) {
+          MotionMood.calm => 3,
+          MotionMood.cinematic => 4,
+          MotionMood.dynamic => 6,
+        };
+        calloutOvershoot = switch (motionPlan.mood) {
+          MotionMood.calm => 0.06,
+          MotionMood.cinematic => 0.12,
+          MotionMood.dynamic => 0.18,
+        };
+
+        final planned = KeywordCalloutPlanner.plan(
+          captions: <CalloutSource>[
+            for (final caption in caps)
+              CalloutSource(start: caption.start, end: caption.end, text: caption.text),
+          ],
+          duration: cutSec,
+          maxCount: maxCallouts,
+          avoid: <List<double>>[
+            for (final item in brolls) <double>[item.start, item.end],
+          ],
+        );
+
+        if (planned.isNotEmpty) {
+          onStatus?.call('جاري تجهيز الكلمات المفتاحية المتحركة...');
+          await TextRender.prepareFont(
+            fontFamily: captionFont,
+            fontSize: outW * 0.12,
+            style: 'bold_center',
+          );
+          for (var i = 0; i < planned.length; i++) {
+            final path = '$dir/callout_${stamp}_$i.png';
+            await TextRender.png(
+              text: planned[i].text,
+              outPath: path,
+              width: outW,
+              fontSize: outW * 0.12,
+              fill: Colors.white,
+              fontFamily: captionFont,
+              style: 'bold_center',
+            );
+            temps.add(path);
+            callouts.add(_CalloutFile(planned[i], path));
+          }
+          notes.add('تم إضافة ${callouts.length} كلمة مفتاحية متحركة.');
+        }
+      } catch (e) {
+        callouts.clear();
+        notes.add('تعذر تجهيز الكلمات المفتاحية: $e');
+      }
+    }
+
     onStatus?.call('جاري بناء طبقات المونتاج والحركات...');
     final timelineProject = _createTimelineProject(
       projectId: 'job_$stamp',
@@ -873,6 +937,37 @@ class Enhancer {
         chains.add("[$cur][$label]overlay=x='$x':y='$y':enable='between(t,${_f(layer.start)},${_f(layer.end)})'[$o]");
         cur = o;
         captionIndex++;
+      }
+
+      // Phase 5: pop-in keyword callouts above the captions.
+      if (visFx && callouts.isNotEmpty) {
+        var calloutIndex = 0;
+        for (final item in callouts) {
+          final idx = inputs.length;
+          final duration = math.max(0.5, item.callout.duration).toDouble();
+          final start = item.callout.start;
+          inputs.add('-loop 1 -framerate 30 -t ${_f(duration)} -i "${item.path}"');
+          final label = 'callout_motion_$calloutIndex';
+          final popScale = KeywordCalloutPlanner.scaleExpression(
+            start: start,
+            overshoot: calloutOvershoot,
+          );
+          final fadeOutStart = math.max(0.0, duration - 0.18).toStringAsFixed(3);
+          chains.add(
+            "[$idx:v]format=rgba,"
+            "fade=t=in:st=0:d=0.100:alpha=1,"
+            "fade=t=out:st=$fadeOutStart:d=0.180:alpha=1,"
+            "setpts=PTS-STARTPTS+${start.toStringAsFixed(3)}/TB,"
+            "scale=w='max(2,iw*($popScale))':h='max(2,ih*($popScale))':eval=frame[$label]",
+          );
+          final o = next();
+          chains.add(
+            "[$cur][$label]overlay=x='main_w*0.5-overlay_w/2':y='main_h*0.30-overlay_h/2':"
+            "enable='between(t,${_f(start)},${_f(start + duration)})'[$o]",
+          );
+          cur = o;
+          calloutIndex++;
+        }
       }
 
       final titleLayers = timelineProject
