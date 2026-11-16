@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:filament_renderer/filament_renderer.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import 'filament_scene_exporter.dart';
 import 'khronos_model_catalog.dart';
@@ -50,6 +51,10 @@ class _ThreeDCue {
 /// - Tracks the main person (Phase 1) and anchors each 3D scene to them
 ///   (Phase 2); scenes that cannot be anchored keep the old panel.
 /// - Composites rendered scenes into the exported video.
+///
+/// Every failed attempt is reported with the stage it failed in (download,
+/// Filament load, camera, readiness, capture) so a problem is never blamed on
+/// the wrong step.
 class ThreeDScenePipeline {
   ThreeDScenePipeline._();
 
@@ -79,6 +84,21 @@ class ThreeDScenePipeline {
     if (normalized.length <= 150) return normalized;
     return normalized.substring(0, 150).trim();
   }
+
+  /// Test hook: the scene windows [_buildCues] derives from a timeline.
+  @visibleForTesting
+  static List<({double start, double end, String query})> debugCues(
+    TimelineProject project,
+  ) {
+    return _buildCues(project)
+        .map((cue) => (start: cue.start, end: cue.end, query: cue.query))
+        .toList();
+  }
+
+  /// Test hook: how many query words appear in a model title.
+  @visibleForTesting
+  static int relevanceScore(String title, String query) =>
+      _relevanceScore(title, query);
 
   /// Creates time windows using the caption layers of the existing timeline.
   ///
@@ -446,9 +466,13 @@ class ThreeDScenePipeline {
 
           String? scenePath;
           ThreeDAsset? usedAsset;
-          String? lastFailure;
+          final attemptFailures = <String>[];
 
           for (final asset in candidates.take(_maximumAttemptsPerScene)) {
+            // Tracks where the attempt is, so a failure is reported in the
+            // stage that really failed.
+            var stage = 'تنزيل وفحص GLB';
+
             try {
               onStatus?.call(
                 'جاري تنزيل المجسم: ${asset.title}...',
@@ -456,6 +480,8 @@ class ThreeDScenePipeline {
 
               // Download + full GLB inspection: a bad file is rejected here.
               final modelPath = await service.download(asset);
+
+              stage = 'تحميل المجسم في Filament';
 
               onStatus?.call(
                 'جاري تحميل المجسم داخل محرك Filament...',
@@ -466,10 +492,14 @@ class ThreeDScenePipeline {
                 filePath: modelPath,
               );
 
+              stage = 'تشغيل حركة الكاميرا';
+
               await FilamentRenderer.setCameraMotion(
                 viewId: viewId,
                 mode: _cameraModes[index % _cameraModes.length],
               );
+
+              stage = 'انتظار جاهزية العرض';
 
               // Let the new model render a few frames before capturing.
               await Future<void>.delayed(
@@ -477,6 +507,8 @@ class ThreeDScenePipeline {
               );
 
               await _waitUntilRenderable(viewId);
+
+              stage = 'التقاط المشهد';
 
               onStatus?.call(
                 'جاري تصوير حركة الكاميرا للمشهد ${index + 1}...',
@@ -507,15 +539,25 @@ class ThreeDScenePipeline {
               usedAsset = asset;
               break;
             } catch (error) {
-              lastFailure = '${asset.title}: $error';
+              attemptFailures.add(
+                '${asset.title} [مرحلة: $stage]: $error',
+              );
             }
           }
 
           if (scenePath == null || usedAsset == null) {
             notes.add(
-              'تعذر تجهيز مجسم للمشهد ${index + 1}: ${lastFailure ?? 'غير معروف'}',
+              'تعذر تجهيز مجسم للمشهد ${index + 1}: '
+              '${attemptFailures.isEmpty ? 'غير معروف' : attemptFailures.join(' | ')}',
             );
             continue;
+          }
+
+          if (attemptFailures.isNotEmpty) {
+            notes.add(
+              'مشهد ${index + 1}: فشلت ${attemptFailures.length} '
+              'محاولة قبل النجاح (${attemptFailures.join(' | ')}).',
+            );
           }
 
           notes.add(
@@ -535,6 +577,10 @@ class ThreeDScenePipeline {
           );
         }
       }
+
+      notes.add(
+        'ملخص 3D: تم تجهيز ${sceneClips.length} من ${cues.length} مشهد.',
+      );
 
       if (sceneClips.isEmpty) {
         notes.add(
@@ -570,6 +616,10 @@ class ThreeDScenePipeline {
             'تعذر ربط المجسمات بالشخص؛ تم استخدام التركيب العادي: $error',
           );
         }
+      }
+
+      if (anchoredPath == null) {
+        notes.add('التركيب: عادي (بدون ربط بحركة الشخص).');
       }
 
       compositePath = anchoredPath ??
