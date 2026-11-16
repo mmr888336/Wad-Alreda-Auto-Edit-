@@ -8,8 +8,9 @@ import 'three_d_stage_log.dart';
 /// Where the 3D pipeline was when it last wrote a note to disk.
 ///
 /// A native crash cannot be caught from Dart, so the pipeline writes this note
-/// BEFORE every risky stage and deletes it when the 3D phase ends normally.
-/// If the note is still there at the next start, the app died in that stage.
+/// BEFORE every risky stage, replaces it as soon as a model is finished, and
+/// deletes it when the 3D phase ends normally. If the note is still there at
+/// the next start, the app died in that stage.
 class ThreeDBreadcrumb {
   const ThreeDBreadcrumb({
     required this.scene,
@@ -17,6 +18,7 @@ class ThreeDBreadcrumb {
     required this.at,
     this.assetKey = '',
     this.assetTitle = '',
+    this.cleared = false,
   });
 
   /// 1-based scene number, 0 for the whole export (tracking / compositing).
@@ -28,12 +30,17 @@ class ThreeDBreadcrumb {
   final String assetKey;
   final String assetTitle;
 
+  /// True when the stage log proves the model finished this stage, so the note
+  /// was out of date and the model is NOT to blame for the crash.
+  final bool cleared;
+
   Map<String, Object> toJson() => <String, Object>{
         'scene': scene,
         'stage': stage.name,
         'assetKey': assetKey,
         'assetTitle': assetTitle,
         'at': at.toIso8601String(),
+        'cleared': cleared,
       };
 
   static ThreeDBreadcrumb? fromJson(Object? value) {
@@ -53,6 +60,7 @@ class ThreeDBreadcrumb {
       assetKey: '${value['assetKey'] ?? ''}',
       assetTitle: '${value['assetTitle'] ?? ''}',
       at: DateTime.tryParse('${value['at'] ?? ''}') ?? DateTime.now(),
+      cleared: value['cleared'] == true,
     );
   }
 
@@ -69,6 +77,8 @@ class ThreeDCrashGuard {
   ThreeDCrashGuard._();
 
   /// Stages where a native crash is plausibly caused by the model itself.
+  /// A model is blocked only when the app died inside one of these stages
+  /// while that model was really being loaded, shown or captured.
   static const Set<ThreeDStage> assetStages = <ThreeDStage>{
     ThreeDStage.filamentLoad,
     ThreeDStage.camera,
@@ -160,8 +170,12 @@ class ThreeDCrashGuard {
   }
 
   /// Call once at startup. When the previous run left a breadcrumb, the app
-  /// ended abruptly in that stage: the model is blocked (model stages) or
-  /// person anchoring is switched off (compositing stage).
+  /// ended abruptly in that stage.
+  ///
+  /// A model is blocked only when the crash happened while it was really being
+  /// loaded, shown or captured: the stage must be a model stage AND the stage
+  /// log must not already show that stage as finished for that model. When the
+  /// compositing stage crashed, person anchoring is switched off instead.
   static Future<ThreeDBreadcrumb?> recoverPreviousCrash() async {
     try {
       final directory = await prepare();
@@ -176,13 +190,35 @@ class ThreeDCrashGuard {
 
       if (crumb == null) return null;
 
+      var result = crumb;
+
       if (assetStages.contains(crumb.stage) && crumb.assetKey.isNotEmpty) {
-        final blocked = await blacklistedKeys();
-        blocked.add(crumb.assetKey);
-        await _file(directory, 'blacklist.json').writeAsString(
-          jsonEncode(blocked.toList()),
-          flush: true,
+        final confirmed = ThreeDLogReader.succeeded(
+          await readLog(),
+          scene: crumb.scene,
+          stage: crumb.stage,
+          assetTitle: crumb.assetTitle,
         );
+
+        if (confirmed) {
+          // The log says this model already finished the stage, so the note
+          // was stale and the model is not the cause. Do not block it.
+          result = ThreeDBreadcrumb(
+            scene: crumb.scene,
+            stage: crumb.stage,
+            at: crumb.at,
+            assetKey: crumb.assetKey,
+            assetTitle: crumb.assetTitle,
+            cleared: true,
+          );
+        } else {
+          final blocked = await blacklistedKeys();
+          blocked.add(crumb.assetKey);
+          await _file(directory, 'blacklist.json').writeAsString(
+            jsonEncode(blocked.toList()),
+            flush: true,
+          );
+        }
       }
 
       if (crumb.stage == ThreeDStage.composite) {
@@ -190,12 +226,12 @@ class ThreeDCrashGuard {
       }
 
       await _file(directory, 'last_crash.json').writeAsString(
-        jsonEncode(crumb.toJson()),
+        jsonEncode(result.toJson()),
         flush: true,
       );
 
-      recovered = crumb;
-      return crumb;
+      recovered = result;
+      return result;
     } catch (_) {
       return null;
     }
@@ -270,6 +306,20 @@ class ThreeDCrashGuard {
     if (crash.stage == ThreeDStage.composite) {
       return 'تم تعطيل ربط المجسمات بحركة الشخص تلقائياً (يُستخدم التركيب العادي) '
           'حتى تعيد تفعيله من تقرير 3D.';
+    }
+
+    if (crash.cleared) {
+      return 'أنهى هذا المجسم مرحلته بنجاح حسب سجل المراحل، لذلك لم يتم حظره؛ '
+          'الانهيار حدث بعد ذلك.';
+    }
+
+    if (crash.stage == ThreeDStage.rendererRelease) {
+      return 'حدث الانهيار أثناء تحرير محرك العرض بعد اكتمال تصوير المشاهد؛ '
+          'لم يتم حظر أي مجسم.';
+    }
+
+    if (crash.stage == ThreeDStage.search) {
+      return 'حدث الانهيار أثناء البحث عن مجسم؛ لم يتم حظر أي مجسم.';
     }
 
     if (assetStages.contains(crash.stage) && crash.assetKey.isNotEmpty) {
