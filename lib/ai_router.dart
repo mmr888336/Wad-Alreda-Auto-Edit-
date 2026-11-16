@@ -82,6 +82,9 @@ class AiRouter {
   }
 
   /// يجرب الخطوات بالترتيب، مع إعادة المحاولة للأخطاء المؤقتة.
+  ///
+  /// طلب انتهت مهلته الكاملة (عشرات الثواني) يُعاد مرة واحدة فقط،
+  /// ثم يُنتقل للمزود التالي بدل انتظار مهلة ثالثة كاملة.
   static Future<AiResult<T>> run<T>(
       List<AiStep<T>> steps) async {
     if (steps.isEmpty) {
@@ -96,6 +99,8 @@ class AiRouter {
     final failures = <String>[];
 
     for (final step in active) {
+      var timeouts = 0;
+
       for (var attempt = 0; attempt <= _delays.length; attempt++) {
         if (JobControl.cancelled) {
           throw Exception('تم إلغاء المونتاج.');
@@ -111,7 +116,8 @@ class AiRouter {
           transient = e.transient;
         } on TimeoutException {
           failures.add('${step.label} ← انتهت المهلة');
-          transient = true;
+          timeouts++;
+          transient = timeouts < 2;
         } on SocketException {
           failures.add('${step.label} ← لا يوجد اتصال');
           transient = true;
@@ -694,4 +700,4 @@ class AiRouter {
 
     return lines;
   }
-} 
+}
