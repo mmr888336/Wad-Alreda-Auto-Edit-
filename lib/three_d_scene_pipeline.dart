@@ -62,11 +62,17 @@ class _ThreeDCue {
 /// - Composites rendered scenes into the exported video.
 ///
 /// Every stage of every scene is logged (see [ThreeDExportSummary]): search,
-/// download, GLB inspection, Filament load, camera, readiness, capture and
-/// compositing. A failed attempt is reported with the stage it failed in, so
-/// a problem is never blamed on the wrong step. The log of the latest export
-/// is kept in [lastExportSummary] and, line by line, on disk (see
-/// [ThreeDCrashGuard]) so it survives a crash.
+/// download, GLB inspection, Filament load, camera, readiness, capture,
+/// renderer release and compositing. Both the START and the END of each stage
+/// are written, so a crash shows exactly which stage was running. A failed
+/// attempt is reported with the stage it failed in, so a problem is never
+/// blamed on the wrong step. The log of the latest export is kept in
+/// [lastExportSummary] and, line by line, on disk (see [ThreeDCrashGuard]) so
+/// it survives a crash.
+///
+/// The crash note is replaced as soon as a model finishes capturing, so a
+/// later crash (releasing the renderer, the next search, compositing) is never
+/// blamed on a model that worked.
 ///
 /// Live progress is reported through `onProgress` for the whole phase.
 ///
@@ -137,6 +143,7 @@ class ThreeDScenePipeline {
         ThreeDStage.camera => 0.50,
         ThreeDStage.ready => 0.52,
         ThreeDStage.capture => 0.60,
+        ThreeDStage.rendererRelease => 1.00,
         ThreeDStage.composite => 1.00,
       };
 
@@ -534,10 +541,16 @@ class ThreeDScenePipeline {
     // the log is complete up to the moment of a crash.
     await ThreeDCrashGuard.begin();
 
-    // Every stage of this export is recorded here and printed as it happens.
+    // Every stage of this export is recorded here and printed as it happens:
+    // one line when a stage starts and one when it ends.
     final summary = ThreeDExportSummary(
       onEvent: (event) {
         final line = event.toLine();
+        debugPrint('[3D] $line');
+        ThreeDCrashGuard.appendLogSync(line);
+      },
+      onStart: (scene, stage, detail) {
+        final line = ThreeDStageEvent.startLine(scene, stage, detail: detail);
         debugPrint('[3D] $line');
         ThreeDCrashGuard.appendLogSync(line);
       },
@@ -626,6 +639,17 @@ class ThreeDScenePipeline {
           scene: sceneNumber,
         );
 
+        // From here on a crash belongs to THIS scene's search, never to the
+        // model of the previous scene (its note is replaced right now).
+        ThreeDCrashGuard.markSync(
+          ThreeDBreadcrumb(
+            scene: sceneNumber,
+            stage: ThreeDStage.search,
+            at: DateTime.now(),
+          ),
+        );
+        summary.begin(sceneNumber, ThreeDStage.search);
+
         final searchWatch = Stopwatch()..start();
         var searchDone = false;
 
@@ -685,8 +709,8 @@ class ThreeDScenePipeline {
             final assetKey = _assetKey(asset);
 
             // Writes the breadcrumb BEFORE the stage starts (a native crash
-            // cannot be caught, so the note says where it happened) and
-            // updates the live progress.
+            // cannot be caught, so the note says where it happened), logs the
+            // start of the stage and updates the live progress.
             void announce(ThreeDStage at) {
               ThreeDCrashGuard.markSync(
                 ThreeDBreadcrumb(
@@ -697,6 +721,8 @@ class ThreeDScenePipeline {
                   assetTitle: asset.title,
                 ),
               );
+
+              summary.begin(sceneNumber, at, detail: asset.title);
 
               report(
                 _sceneFraction(index, cues.length, at),
@@ -795,6 +821,21 @@ class ThreeDScenePipeline {
 
               finish(ThreeDStage.capture);
 
+              // The model finished everything it was asked to do. Replace its
+              // crash note right away, so whatever happens next (the next
+              // search, releasing the renderer) is never blamed on it.
+              final lastScene = index == cues.length - 1;
+
+              ThreeDCrashGuard.markSync(
+                ThreeDBreadcrumb(
+                  scene: lastScene ? 0 : sceneNumber + 1,
+                  stage: lastScene
+                      ? ThreeDStage.rendererRelease
+                      : ThreeDStage.search,
+                  at: DateTime.now(),
+                ),
+              );
+
               temporaryDirectories.add(sceneFile.parent.path);
               scenePath = capturedPath;
               usedAsset = asset;
@@ -877,11 +918,44 @@ class ThreeDScenePipeline {
 
       // Every scene is rendered: the native Filament view is not needed any
       // more. Let the screen release it now, so its GPU memory is free (and
-      // the phone cools down) before tracking and compositing start.
+      // the phone cools down) before tracking and compositing start. This is
+      // its own stage: a native crash while releasing the view must be
+      // reported as such and never blamed on the last model.
+      final releaseWatch = Stopwatch()..start();
+
+      ThreeDCrashGuard.markSync(
+        ThreeDBreadcrumb(
+          scene: 0,
+          stage: ThreeDStage.rendererRelease,
+          at: DateTime.now(),
+        ),
+      );
+      summary.begin(0, ThreeDStage.rendererRelease);
+
+      report(
+        _sceneShare,
+        'اكتمل تجهيز المشاهد؛ جاري تحرير محرك العرض...',
+        stage: ThreeDStage.rendererRelease,
+      );
+
       try {
         await onRenderingDone?.call();
-      } catch (_) {
+
+        summary.record(
+          0,
+          ThreeDStage.rendererRelease,
+          ok: true,
+          elapsed: releaseWatch.elapsed,
+        );
+      } catch (error) {
         // Releasing the view must never stop the export.
+        summary.record(
+          0,
+          ThreeDStage.rendererRelease,
+          ok: false,
+          elapsed: releaseWatch.elapsed,
+          detail: '$error',
+        );
       }
 
       onStatus?.call(
@@ -902,6 +976,7 @@ class ThreeDScenePipeline {
           at: DateTime.now(),
         ),
       );
+      summary.begin(0, ThreeDStage.composite);
 
       final watch = Stopwatch()..start();
       compositeWatch = watch;
