@@ -52,6 +52,23 @@ class SilenceCutter {
   static String _tail(String value) =>
       value.length > 500 ? value.substring(value.length - 500) : value;
 
+  /// Speed policy for phones. The x264 `slow`, `medium` and `fast` presets at
+  /// 2K can take many minutes on a phone; `veryfast` keeps the same CRF
+  /// quality target in a fraction of the time (the file is only slightly
+  /// larger). Every encode of the app goes through [encode], so this one
+  /// switch speeds up the whole export. Set it to false to use the presets
+  /// written in each command.
+  static bool fastPresets = true;
+
+  static final RegExp _heavyPreset = RegExp(
+    r'-preset (?:placebo|veryslow|slower|slow|medium|fast)\b',
+  );
+
+  static String _applySpeedPolicy(String command) {
+    if (!fastPresets) return command;
+    return command.replaceAll(_heavyPreset, '-preset veryfast');
+  }
+
   /// Reads video dimensions. FFmpeg may return a non-zero code because this
   /// command intentionally has no output file.
   static Future<MediaInfo> probe(String path) async {
@@ -224,7 +241,7 @@ class SilenceCutter {
     if (JobControl.cancelled) return Future<bool>.value(false);
 
     final completer = Completer<bool>();
-    FFmpegKit.executeAsync(command, (session) async {
+    FFmpegKit.executeAsync(_applySpeedPolicy(command), (session) async {
       final returnCode = await session.getReturnCode();
       if (!completer.isCompleted) {
         completer.complete(ReturnCode.isSuccess(returnCode));
