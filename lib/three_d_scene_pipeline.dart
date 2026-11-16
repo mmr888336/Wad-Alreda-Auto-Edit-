@@ -5,9 +5,12 @@ import 'dart:math' as math;
 import 'package:filament_renderer/filament_renderer.dart';
 
 import 'filament_scene_exporter.dart';
+import 'person_anchored_compositor.dart';
+import 'person_tracking_service.dart';
 import 'settings.dart';
 import 'three_d_asset_service.dart';
 import 'timeline_engine.dart';
+import 'visual_tracking_engine.dart';
 
 class ThreeDScenePipelineResult {
   final bool applied;
@@ -41,11 +44,17 @@ class _ThreeDCue {
 /// - Searches and downloads GLB assets.
 /// - Loads each asset into the native Filament renderer.
 /// - Captures camera movement.
+/// - Tracks the main person (Phase 1) and anchors each 3D scene to them
+///   (Phase 2); scenes that cannot be anchored keep the old panel.
 /// - Composites rendered scenes into the exported video.
 class ThreeDScenePipeline {
   ThreeDScenePipeline._();
 
   static const int _maximumScenesPerExport = 8;
+
+  /// Phase 2 switch: follow the tracked person with the 3D scenes.
+  /// Any failure falls back to the previous panel compositing.
+  static bool personAnchoringEnabled = true;
 
   static const List<String> _cameraModes = <String>[
     'orbit',
@@ -252,6 +261,65 @@ class ThreeDScenePipeline {
     );
   }
 
+  /// Phase 1 + 2: tracks the main person and composites the scenes around
+  /// them. Returns null (and removes any partial file) when nothing could be
+  /// anchored, so the caller uses the previous panel compositing.
+  static Future<String?> _compositeAnchored({
+    required String videoPath,
+    required List<ThreeDSceneClip> scenes,
+    required TimelineProject timeline,
+    required AppSettings settings,
+    required List<String> notes,
+    void Function(String message)? onStatus,
+  }) async {
+    onStatus?.call('جاري تتبع الشخص لربط المجسمات به...');
+
+    final run = await PersonTrackingService.analyzeVideo(
+      videoPath,
+      config: TrackingConfig(
+        sampleFps: 8,
+        frameWidth: 480,
+        maxSeconds: timeline.duration.clamp(1.0, 120.0).toDouble(),
+        maxFrames: 960,
+      ),
+      onStatus: onStatus,
+    );
+
+    final track = run.result.primaryTrack;
+
+    if (track == null) {
+      notes.add(
+        'لم يتم اكتشاف شخص في الفيديو؛ استُخدم التركيب العادي للمجسمات.',
+      );
+      return null;
+    }
+
+    final result = await PersonAnchoredCompositor.composite(
+      videoPath: videoPath,
+      scenes: scenes,
+      duration: timeline.duration,
+      track: track,
+      maximumQuality: settings.maximumQuality,
+      onStatus: onStatus,
+    );
+
+    if (result.anchoredScenes == 0 || result.path.isEmpty) {
+      notes.add(
+        'الشخص غير ظاهر بما يكفي في نوافذ المشاهد؛ استُخدم التركيب العادي.',
+      );
+      notes.addAll(result.notes);
+      return null;
+    }
+
+    notes.add(
+      'تم ربط ${result.anchoredScenes} مشهد 3D بحركة الشخص'
+      '${result.pipScenes > 0 ? ' (و${result.pipScenes} بالتركيب العادي)' : ''}.',
+    );
+    notes.addAll(result.notes);
+
+    return result.path;
+  }
+
   static Future<ThreeDScenePipelineResult> apply({
     required int viewId,
     required String videoPath,
@@ -408,14 +476,34 @@ class ThreeDScenePipeline {
         'جاري تركيب ${sceneClips.length} مشاهد 3D في الفيديو...',
       );
 
-      compositePath =
+      String? anchoredPath;
+
+      if (personAnchoringEnabled && PersonTrackingService.hasDetector) {
+        try {
+          anchoredPath = await _compositeAnchored(
+            videoPath: videoPath,
+            scenes: sceneClips,
+            timeline: timeline,
+            settings: settings,
+            notes: notes,
+            onStatus: onStatus,
+          );
+        } catch (error) {
+          anchoredPath = null;
+          notes.add(
+            'تعذر ربط المجسمات بالشخص؛ تم استخدام التركيب العادي: $error',
+          );
+        }
+      }
+
+      compositePath = anchoredPath ??
           await FilamentSceneExporter.compositeScenesOverVideo(
-        videoPath: videoPath,
-        scenes: sceneClips,
-        duration: timeline.duration,
-        maximumQuality: settings.maximumQuality,
-        onStatus: onStatus,
-      );
+            videoPath: videoPath,
+            scenes: sceneClips,
+            duration: timeline.duration,
+            maximumQuality: settings.maximumQuality,
+            onStatus: onStatus,
+          );
 
       final compositeFile = File(compositePath);
 
