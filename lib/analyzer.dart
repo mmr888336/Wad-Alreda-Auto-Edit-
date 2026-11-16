@@ -71,6 +71,44 @@ class Analyzer {
     }
   }
 
+  static String _normalizedText(String text) => text
+      .replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ')
+      .trim()
+      .toLowerCase();
+
+  /// ينظّف قائمة الكابشن: يدمج التكرار المتلاصق لنفس النص (شائع في تفريغ Whisper)
+  /// ويمنع تداخل الأوقات بحيث لا يظهر كابشنان معاً.
+  static List<Caption> cleanCaptions(List<Caption> input) {
+    final sorted = List<Caption>.from(input)
+      ..sort((a, b) => a.start.compareTo(b.start));
+    final out = <Caption>[];
+
+    for (final caption in sorted) {
+      final text = caption.text.trim();
+      if (text.isEmpty) continue;
+
+      if (out.isNotEmpty) {
+        final previous = out.last;
+        final repeated =
+            _normalizedText(previous.text) == _normalizedText(text);
+
+        if (repeated && caption.start - previous.end < 1.5) {
+          if (caption.end > previous.end) previous.end = caption.end;
+          continue;
+        }
+
+        if (caption.start < previous.end) {
+          previous.end = caption.start;
+        }
+      }
+
+      out.add(Caption(caption.start, caption.end, text));
+    }
+
+    out.removeWhere((c) => c.end - c.start < 0.15);
+    return out;
+  }
+
   /// يقسم مدة الصوت إلى مقاطع عند نقاط القص الطبيعية.
   static List<List<double>> _chunks(
     double dur,
@@ -298,7 +336,7 @@ class Analyzer {
 - title: عنوان جذاب يشد الانتباه في أول 3 ثواني، من 3 إلى 7 كلمات، بنفس لغة الفيديو.
 - description: وصف قصير للنشر (سطرين على الأكثر).
 - hashtags: من 5 إلى 8 هاشتاقات بدون علامة #.
-- broll: من 2 إلى 4 لحظات يناسبها مقطع توضيحي (B-roll) بعد الثانية 4، كل واحدة بين 2 و3 ثواني. اجعل المقطع مرتبطاً بمعنى الكلام في تلك اللحظة تحديداً (فكرة مختلفة لكل لحظة). query كلمات بحث إنجليزية بسيطة (من 1 إلى 3 كلمات). مهم جداً: اختر مشاهد وأشياء وأماكن وطبيعة ومفاهيم (مثل money, city night, laptop, sunrise, shopping, phone, ocean, graph) ولا تذكر أشخاصاً ولا نساء ولا وجوهاً في الكلمات. لو ما في لحظات مناسبة اترك المصفوفة فاضية.
+- broll: من 2 إلى 4 لحظات يناسبها مقطع توضيحي (B-roll) بعد الثانية 4، كل واحدة بين 2 و 3 ثواني. اجعل المقطع مرتبطاً بمعنى الكلام في تلك اللحظة تحديداً (فكرة مختلفة لكل لحظة). query كلمات بحث إنجليزية بسيطة (من 1 إلى 3 كلمات). مهم جداً: اختر مشاهد وأشياء وأماكن وطبيعة ومفاهيم (مثل money, city night, laptop, sunrise, shopping, phone, ocean, graph) ولا تذكر أشخاصاً ولا نساءً ولا وجوهاً في الكلمات. لو ما في لحظات مناسبة اترك المصفوفة فاضية.
 
 النص:
 $transcript
@@ -470,6 +508,16 @@ $transcript
           c.start >= durationSec ||
           c.text.trim().isEmpty,
     );
+
+    // إزالة الكابشن المكرر (هلوسة Whisper أو تداخل المقاطع).
+    final beforeClean = all.length;
+    final cleaned = cleanCaptions(all);
+    all
+      ..clear()
+      ..addAll(cleaned);
+    if (all.length < beforeClean) {
+      notes.add('تمت إزالة ${beforeClean - all.length} كابشن مكرر أو متداخل.');
+    }
 
     if (all.isEmpty) {
       return Analysis([], '', '', [], [], notes);
