@@ -58,23 +58,13 @@ class PersonAnchoredCommand {
     final ordered = List<AnchoredSceneSpec>.from(scenes)
       ..sort((a, b) => a.start.compareTo(b.start));
 
-    final occludedCount = ordered.where((s) => s.isOccluded).length;
-
     final inputs = <String>['-i "$videoPath"'];
     final chains = <String>[];
 
-    final base =
-        '[0:v]scale=$width:$height:flags=lanczos,setsar=1,format=yuv420p';
-
-    if (occludedCount == 0) {
-      chains.add('$base[pbase]');
-    } else {
-      final labels = StringBuffer('[pbase]');
-      for (var k = 0; k < occludedCount; k++) {
-        labels.write('[pperson$k]');
-      }
-      chains.add('$base,split=${occludedCount + 1}$labels');
-    }
+    chains.add(
+      '[0:v]scale=$width:$height:flags=lanczos,setsar=1,format=yuv420p'
+      '[pbase]',
+    );
 
     final shortEdge = math.min(width, height);
     final pipSide = _even(
@@ -83,7 +73,6 @@ class PersonAnchoredCommand {
     final margin = math.max(8, (width * 0.035).round());
 
     var current = 'pbase';
-    var personIndex = 0;
 
     for (var i = 0; i < ordered.length; i++) {
       final spec = ordered[i];
@@ -145,13 +134,25 @@ class PersonAnchoredCommand {
 
       final matte = spec.matte;
       if (spec.isOccluded && matte != null) {
+        // The person layer reads ITS OWN short window of the video (-ss/-t).
+        // It used to be a split + trim of the full-resolution stream: the
+        // overlay then waited for the first person frame of a scene that
+        // starts seconds later and buffered every full-size frame in between,
+        // which ran the phone out of memory and closed the app near the end
+        // of the export. A separate input delivers its first frame at once.
+        final windowSeconds = math.max(0.2, spec.end - spec.start + 0.1);
+        inputs.add(
+          '-ss $start -t ${_f(windowSeconds)} -i "$videoPath"',
+        );
+        final personIndex = inputs.length - 1;
+
         inputs.add(
           '-framerate ${_f(matte.fps)} -i "${matte.pattern}"',
         );
         final matteIndex = inputs.length - 1;
 
         final matteLabel = 'matte$i';
-        final trimLabel = 'ptrim$i';
+        final windowLabel = 'pwin$i';
         final cutLabel = 'pcut$i';
         final topLabel = 'ptop$i';
 
@@ -161,22 +162,23 @@ class PersonAnchoredCommand {
           'gblur=sigma=2.5,format=gray[$matteLabel]',
         );
         chains.add(
-          '[pperson$personIndex]trim=start=$start:end=$end,'
-          'setpts=PTS-STARTPTS+$start/TB[$trimLabel]',
+          '[$personIndex:v]scale=$width:$height:flags=lanczos,setsar=1,'
+          'format=yuv420p,setpts=PTS-STARTPTS+$start/TB[$windowLabel]',
         );
-        chains.add('[$trimLabel][$matteLabel]alphamerge[$cutLabel]');
+        chains.add('[$windowLabel][$matteLabel]alphamerge[$cutLabel]');
         chains.add(
           '[$current][$cutLabel]overlay=x=0:y=0:'
           "eof_action=pass:repeatlast=0:enable='between(t,$start,$end)'"
           '[$topLabel]',
         );
         current = topLabel;
-        personIndex++;
       }
     }
 
+    // The video was already encoded at high quality by the editor, so this
+    // second pass uses a lighter preset: far less memory and time on a phone.
     final encoder = maximumQuality
-        ? '-c:v libx264 -preset slow -crf 17'
+        ? '-c:v libx264 -preset fast -crf 17'
         : '-c:v libx264 -preset veryfast -crf 20';
 
     return '-y ${inputs.join(' ')} '

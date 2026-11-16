@@ -96,7 +96,6 @@ void main() {
       );
 
       expect(command, contains('-filter_complex'));
-      expect(command, contains('split=2[pbase][pperson0]'));
       expect(command, contains('colorkey=0x101521:0.12:0.08'));
       expect(command, contains('alphamerge'));
       expect(command, contains('-framerate 12.000 -i "/tmp/m/matte_%05d.png"'));
@@ -106,10 +105,39 @@ void main() {
       expect(command, contains("enable='between(t,5.000,7.000)'"));
       expect(command, contains('-map "0:a?"'));
       expect(command, endsWith('"/v/out.mp4"'));
-      expect(RegExp(r'-i "').allMatches(command).length, 4);
+
+      // Inputs: video, anchored scene, person window, matte, pip scene.
+      expect(RegExp(r'-i "').allMatches(command).length, 5);
     });
 
-    test('without occlusion no person split is created', () {
+    test('the person layer is its own short input, never a split of the '
+        'full video (that buffered every frame and crashed the app)', () {
+      final command = PersonAnchoredCommand.build(
+        videoPath: '/v/in.mp4',
+        outputPath: '/v/out.mp4',
+        width: 1080,
+        height: 1920,
+        duration: 10,
+        scenes: <AnchoredSceneSpec>[
+          AnchoredSceneSpec(
+            scenePath: '/v/anchored.mp4',
+            start: 1,
+            end: 3,
+            path: path,
+            matte: matte,
+            keyColors: const <String>['0x101521'],
+          ),
+        ],
+      );
+
+      expect(command, isNot(contains('split=')));
+      expect(command, isNot(contains('trim=start')));
+      expect(command, contains('-ss 1.000 -t 2.100 -i "/v/in.mp4"'));
+      expect(RegExp(r'-i "/v/in\.mp4"').allMatches(command).length, 2);
+      expect(command, isNot(contains('-preset slow')));
+    });
+
+    test('without occlusion no person layer is created', () {
       final command = PersonAnchoredCommand.build(
         videoPath: '/v/in.mp4',
         outputPath: '/v/out.mp4',
@@ -129,6 +157,7 @@ void main() {
 
       expect(command, isNot(contains('split=')));
       expect(command, isNot(contains('alphamerge')));
+      expect(command, isNot(contains('-ss ')));
       expect(command, contains('-preset veryfast'));
     });
 
