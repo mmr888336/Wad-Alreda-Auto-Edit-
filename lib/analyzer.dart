@@ -76,6 +76,83 @@ class Analyzer {
       .trim()
       .toLowerCase();
 
+  /// يختصر تكرار نفس مجموعة الكلمات داخل جملة واحدة (حلقة هلوسة Whisper)،
+  /// مثل "أ ب ج أ ب ج" تصبح "أ ب ج". الكلمة الواحدة لا تُختصر إلا إذا تكررت
+  /// 5 مرات أو أكثر حتى لا نمسح التأكيد الطبيعي في الكلام.
+  static String collapseRepeatedWords(String text) {
+    final words = text
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((w) => w.isNotEmpty)
+        .toList();
+
+    if (words.length < 2) return text.trim();
+
+    final keys = words.map(_normalizedText).toList();
+
+    for (var k = 1; k <= words.length ~/ 2; k++) {
+      if (words.length % k != 0) continue;
+
+      final times = words.length ~/ k;
+      final minTimes = k == 1 ? 5 : 2;
+      if (times < minTimes) continue;
+
+      var same = true;
+      for (var i = k; i < words.length && same; i++) {
+        if (keys[i] != keys[i - k]) same = false;
+      }
+
+      if (same) return words.sublist(0, k).join(' ');
+    }
+
+    return words.join(' ');
+  }
+
+  /// ينظّف مقاطع التفريغ الخام قبل تقسيمها إلى عبارات قصيرة.
+  /// التكرار يجب أن يُزال هنا لأن التقسيم إلى 3 كلمات يجعل الجملة المكررة
+  /// تظهر كعبارات متبادلة لا يكشفها الدمج المتلاصق لاحقاً.
+  static List<Caption> cleanSegments(List<Caption> input) {
+    final sorted = List<Caption>.from(input)
+      ..sort((a, b) => a.start.compareTo(b.start));
+    final out = <Caption>[];
+
+    for (final segment in sorted) {
+      if (segment.end <= segment.start) continue;
+
+      final text = collapseRepeatedWords(segment.text);
+      final key = _normalizedText(text);
+      if (text.isEmpty || key.isEmpty) continue;
+
+      if (out.isNotEmpty) {
+        final previous = out.last;
+        final previousKey = _normalizedText(previous.text);
+
+        // نفس الجملة متكررة وقريبة: ندمجها في مقطع واحد.
+        if (key == previousKey && segment.start - previous.end < 1.5) {
+          if (segment.end > previous.end) previous.end = segment.end;
+          continue;
+        }
+
+        if (segment.start < previous.end) {
+          // مقطع متداخل زمنياً وهو جزء من المقطع السابق: نتجاهله.
+          if (' $previousKey '.contains(' $key ')) continue;
+
+          // المقطع الجديد يحتوي السابق ويتداخل معه: نستبدل السابق به.
+          if (' $key '.contains(' $previousKey ')) {
+            final end =
+                segment.end > previous.end ? segment.end : previous.end;
+            out[out.length - 1] = Caption(previous.start, end, text);
+            continue;
+          }
+        }
+      }
+
+      out.add(Caption(segment.start, segment.end, text));
+    }
+
+    return out;
+  }
+
   /// ينظّف قائمة الكابشن: يدمج التكرار المتلاصق لنفس النص (شائع في تفريغ Whisper)
   /// ويمنع تداخل الأوقات بحيث لا يظهر كابشنان معاً.
   static List<Caption> cleanCaptions(List<Caption> input) {
@@ -261,7 +338,8 @@ class Analyzer {
             language: s.lang,
           );
 
-          final caps = <Caption>[];
+          // نجمع المقاطع الخام أولاً وننظفها من التكرار قبل التقسيم.
+          final raw = <Caption>[];
 
           for (final e in segs) {
             final st = _num(e['start']);
@@ -269,9 +347,13 @@ class Analyzer {
 
             if (en > dur) en = dur;
 
-            caps.addAll(
-              _splitPhrase(st, en, '${e['text'] ?? ''}'),
-            );
+            raw.add(Caption(st, en, '${e['text'] ?? ''}'));
+          }
+
+          final caps = <Caption>[];
+
+          for (final seg in cleanSegments(raw)) {
+            caps.addAll(_splitPhrase(seg.start, seg.end, seg.text));
           }
 
           return caps;

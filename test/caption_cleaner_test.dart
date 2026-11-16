@@ -55,4 +55,89 @@ void main() {
       expect(cleaned.map((c) => c.text), <String>['a', 'b']);
     });
   });
+
+  group('Analyzer.collapseRepeatedWords', () {
+    test('collapses a phrase repeated inside one sentence', () {
+      expect(
+        Analyzer.collapseRepeatedWords('one two three one two three'),
+        'one two three',
+      );
+    });
+
+    test('keeps natural emphasis of a single word', () {
+      expect(
+        Analyzer.collapseRepeatedWords('لا لا لا'),
+        'لا لا لا',
+      );
+    });
+
+    test('collapses a word stuck in a loop', () {
+      expect(
+        Analyzer.collapseRepeatedWords('نعم نعم نعم نعم نعم نعم'),
+        'نعم',
+      );
+    });
+
+    test('leaves a normal sentence unchanged', () {
+      expect(
+        Analyzer.collapseRepeatedWords('هذا كلام عادي جداً'),
+        'هذا كلام عادي جداً',
+      );
+    });
+  });
+
+  group('Analyzer.cleanSegments', () {
+    test('merges the same long sentence repeated by Whisper', () {
+      final cleaned = Analyzer.cleanSegments(<Caption>[
+        Caption(0, 3, 'a b c d e f'),
+        Caption(3, 6, 'a b c d e f'),
+        Caption(6, 8, 'g h i'),
+      ]);
+
+      expect(cleaned.length, 2);
+      expect(cleaned.first.start, 0);
+      expect(cleaned.first.end, 6);
+      expect(cleaned.last.text, 'g h i');
+    });
+
+    test('drops a segment that is part of the overlapping previous one', () {
+      final cleaned = Analyzer.cleanSegments(<Caption>[
+        Caption(0, 4, 'a b c d e f'),
+        Caption(1, 3, 'c d e'),
+      ]);
+
+      expect(cleaned.length, 1);
+      expect(cleaned.first.text, 'a b c d e f');
+    });
+
+    test('replaces the previous segment when the new one contains it', () {
+      final cleaned = Analyzer.cleanSegments(<Caption>[
+        Caption(0, 2, 'a b c'),
+        Caption(1, 4, 'a b c d e'),
+      ]);
+
+      expect(cleaned.length, 1);
+      expect(cleaned.first.text, 'a b c d e');
+      expect(cleaned.first.start, 0);
+      expect(cleaned.first.end, 4);
+    });
+
+    test('keeps the same sentence when it is said again much later', () {
+      final cleaned = Analyzer.cleanSegments(<Caption>[
+        Caption(0, 2, 'a b c'),
+        Caption(10, 12, 'a b c'),
+      ]);
+
+      expect(cleaned.length, 2);
+    });
+
+    test('keeps different sentences that do not overlap', () {
+      final cleaned = Analyzer.cleanSegments(<Caption>[
+        Caption(0, 2, 'a b c'),
+        Caption(2, 4, 'd e f'),
+      ]);
+
+      expect(cleaned.map((c) => c.text), <String>['a b c', 'd e f']);
+    });
+  });
 }
