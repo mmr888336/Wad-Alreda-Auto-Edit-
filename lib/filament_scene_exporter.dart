@@ -143,6 +143,7 @@ class FilamentSceneExporter {
     required double duration,
     bool maximumQuality = true,
     void Function(String message)? onStatus,
+    void Function(double progress)? onProgress,
   }) async {
     final sourceFile = File(videoPath);
 
@@ -289,8 +290,10 @@ class FilamentSceneExporter {
       current = outputLabel;
     }
 
+    // The video was already encoded at high quality by the editor, so this
+    // second pass uses a lighter preset: far less memory and time on a phone.
     final videoEncoder = maximumQuality
-        ? '-c:v libx264 -preset slow -crf 17'
+        ? '-c:v libx264 -preset fast -crf 17'
         : '-c:v libx264 -preset veryfast -crf 20';
 
     final command =
@@ -311,7 +314,7 @@ class FilamentSceneExporter {
     final encoded = await SilenceCutter.encode(
       command,
       duration,
-      null,
+      onProgress,
     );
 
     final outputFile = File(outputPath);

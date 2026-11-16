@@ -11,6 +11,8 @@ import 'person_anchored_compositor.dart';
 import 'person_tracking_service.dart';
 import 'settings.dart';
 import 'three_d_asset_service.dart';
+import 'three_d_crash_guard.dart';
+import 'three_d_progress.dart';
 import 'three_d_query_planner.dart';
 import 'three_d_stage_log.dart';
 import 'timeline_engine.dart';
@@ -63,12 +65,20 @@ class _ThreeDCue {
 /// download, GLB inspection, Filament load, camera, readiness, capture and
 /// compositing. A failed attempt is reported with the stage it failed in, so
 /// a problem is never blamed on the wrong step. The log of the latest export
-/// is kept in [lastExportSummary].
+/// is kept in [lastExportSummary] and, line by line, on disk (see
+/// [ThreeDCrashGuard]) so it survives a crash.
+///
+/// Live progress is reported through `onProgress` for the whole phase.
 class ThreeDScenePipeline {
   ThreeDScenePipeline._();
 
   static const int _maximumScenesPerExport = 8;
   static const int _maximumAttemptsPerScene = 4;
+
+  // Share of the 3D phase bar: scenes, then person tracking, then compositing.
+  static const double _sceneShare = 0.60;
+  static const double _trackingStart = 0.60;
+  static const double _compositeStart = 0.72;
 
   /// Phase 2 switch: follow the tracked person with the 3D scenes.
   /// Any failure falls back to the previous panel compositing.
@@ -95,6 +105,29 @@ class ThreeDScenePipeline {
 
     if (normalized.length <= 150) return normalized;
     return normalized.substring(0, 150).trim();
+  }
+
+  static String _assetKey(ThreeDAsset asset) =>
+      '${asset.provider.name}:${asset.id}';
+
+  static double _unit(double value) =>
+      value.isNaN ? 0.0 : value.clamp(0.0, 1.0).toDouble();
+
+  /// Where each stage starts inside one scene's share of the bar.
+  static double _stageStart(ThreeDStage stage) => switch (stage) {
+        ThreeDStage.search => 0.00,
+        ThreeDStage.download => 0.10,
+        ThreeDStage.inspect => 0.35,
+        ThreeDStage.filamentLoad => 0.40,
+        ThreeDStage.camera => 0.50,
+        ThreeDStage.ready => 0.52,
+        ThreeDStage.capture => 0.60,
+        ThreeDStage.composite => 1.00,
+      };
+
+  static double _sceneFraction(int index, int count, ThreeDStage stage) {
+    if (count <= 0) return 0.0;
+    return (index + _stageStart(stage)) / count * _sceneShare;
   }
 
   /// Test hook: the scene windows [_buildCues] derives from a timeline.
@@ -254,11 +287,13 @@ class ThreeDScenePipeline {
   }
 
   /// Candidate models for one scene, best first: online libraries for the
-  /// first keyword that has results, then the built-in catalog.
-  static Future<List<ThreeDAsset>> _candidateAssets({
+  /// first keyword that has results, then the built-in catalog. Models that
+  /// crashed the app before ([blockedKeys]) are left out and counted.
+  static Future<({List<ThreeDAsset> assets, int blocked})> _candidateAssets({
     required ThreeDAssetService service,
     required List<String> keywords,
     required int sceneIndex,
+    required Set<String> blockedKeys,
   }) async {
     final candidates = <ThreeDAsset>[];
 
@@ -295,13 +330,28 @@ class ThreeDScenePipeline {
     }
 
     final seen = <String>{};
-    return candidates
-        .where((asset) => seen.add('${asset.provider.name}:${asset.id}'))
-        .toList();
+    final assets = <ThreeDAsset>[];
+    var blocked = 0;
+
+    for (final asset in candidates) {
+      final key = _assetKey(asset);
+
+      if (!seen.add(key)) continue;
+
+      if (blockedKeys.contains(key)) {
+        blocked++;
+        continue;
+      }
+
+      assets.add(asset);
+    }
+
+    return (assets: assets, blocked: blocked);
   }
 
   /// Waits for the actual Android Filament SurfaceView to render the GLB.
-  static Future<void> _waitUntilRenderable(int viewId) async {
+  /// Also used by the offline self-test on the diagnostics screen.
+  static Future<void> waitUntilRenderable(int viewId) async {
     for (var attempt = 0; attempt < 100; attempt++) {
       final diagnostics =
           await FilamentRenderer.getViewDiagnostics(viewId);
@@ -343,8 +393,10 @@ class ThreeDScenePipeline {
     required AppSettings settings,
     required List<String> notes,
     void Function(String message)? onStatus,
+    void Function(double fraction, String message)? onPhase,
   }) async {
     onStatus?.call('جاري تتبع الشخص لربط المجسمات به...');
+    onPhase?.call(_trackingStart, 'جاري تتبع الشخص لربط المجسمات به...');
 
     final run = await PersonTrackingService.analyzeVideo(
       videoPath,
@@ -355,6 +407,11 @@ class ThreeDScenePipeline {
         maxFrames: 960,
       ),
       onStatus: onStatus,
+      onProgress: (value) => onPhase?.call(
+        _trackingStart +
+            (_compositeStart - _trackingStart) * _unit(value),
+        'جاري تتبع الشخص لربط المجسمات به...',
+      ),
     );
 
     final track = run.result.primaryTrack;
@@ -373,6 +430,10 @@ class ThreeDScenePipeline {
       track: track,
       maximumQuality: settings.maximumQuality,
       onStatus: onStatus,
+      onProgress: (value) => onPhase?.call(
+        _compositeStart + (1.0 - _compositeStart) * _unit(value),
+        'جاري دمج مشاهد 3D مع الفيديو...',
+      ),
     );
 
     if (result.anchoredScenes == 0 || result.path.isEmpty) {
@@ -398,14 +459,23 @@ class ThreeDScenePipeline {
     required TimelineProject timeline,
     required AppSettings settings,
     void Function(String message)? onStatus,
+    void Function(ThreeDProgress progress)? onProgress,
   }) async {
     final notes = <String>[];
     final sceneClips = <ThreeDSceneClip>[];
     final temporaryDirectories = <String>{};
 
+    // Starts a fresh on-disk log; every stage is appended as it happens, so
+    // the log is complete up to the moment of a crash.
+    await ThreeDCrashGuard.begin();
+
     // Every stage of this export is recorded here and printed as it happens.
     final summary = ThreeDExportSummary(
-      onEvent: (event) => debugPrint('[3D] ${event.toLine()}'),
+      onEvent: (event) {
+        final line = event.toLine();
+        debugPrint('[3D] $line');
+        ThreeDCrashGuard.appendLogSync(line);
+      },
     );
     lastExportSummary = summary;
 
@@ -449,6 +519,28 @@ class ThreeDScenePipeline {
       );
     }
 
+    // Reports live progress for the whole 3D phase (0..1).
+    void report(
+      double fraction,
+      String message, {
+      ThreeDStage? stage,
+      int scene = 0,
+    }) {
+      final callback = onProgress;
+      if (callback == null) return;
+
+      callback(
+        ThreeDProgress(
+          fraction: _unit(fraction),
+          message: message,
+          stage: stage,
+          scene: scene,
+          sceneCount: cues.length,
+        ),
+      );
+    }
+
+    final blockedKeys = await ThreeDCrashGuard.blacklistedKeys();
     final service = ThreeDAssetService(settings: settings);
 
     try {
@@ -462,6 +554,13 @@ class ThreeDScenePipeline {
           '${cue.end.toStringAsFixed(1)}s)...',
         );
 
+        report(
+          _sceneFraction(index, cues.length, ThreeDStage.search),
+          'مشهد $sceneNumber من ${cues.length} — البحث عن مجسم مناسب...',
+          stage: ThreeDStage.search,
+          scene: sceneNumber,
+        );
+
         final searchWatch = Stopwatch()..start();
         var searchDone = false;
 
@@ -471,11 +570,17 @@ class ThreeDScenePipeline {
             cue.query,
           );
 
-          final candidates = await _candidateAssets(
+          final found = await _candidateAssets(
             service: service,
             keywords: keywords,
             sceneIndex: index,
+            blockedKeys: blockedKeys,
           );
+
+          final candidates = found.assets;
+          final blockedNote = found.blocked > 0
+              ? ' — ${found.blocked} محظور بعد انهيار سابق'
+              : '';
 
           searchDone = true;
 
@@ -485,15 +590,15 @@ class ThreeDScenePipeline {
             ok: candidates.isNotEmpty,
             elapsed: searchWatch.elapsed,
             detail: candidates.isEmpty
-                ? 'لا توجد مرشحات (${keywords.take(3).join('، ')})'
+                ? 'لا توجد مرشحات (${keywords.take(3).join('، ')})$blockedNote'
                 : '${candidates.length} مرشح '
-                    '(${keywords.take(3).join('، ')})',
+                    '(${keywords.take(3).join('، ')})$blockedNote',
           );
 
           if (candidates.isEmpty) {
             notes.add(
               'لم يتم العثور على مجسم GLB مناسب للمشهد $sceneNumber '
-              '(${keywords.take(3).join('، ')}).',
+              '(${keywords.take(3).join('، ')})$blockedNote.',
             );
 
             if (service.warnings.isNotEmpty) {
@@ -512,6 +617,29 @@ class ThreeDScenePipeline {
             // stage that really failed.
             var stage = ThreeDStage.download;
             final stopwatch = Stopwatch()..start();
+            final assetKey = _assetKey(asset);
+
+            // Writes the breadcrumb BEFORE the stage starts (a native crash
+            // cannot be caught, so the note says where it happened) and
+            // updates the live progress.
+            void announce(ThreeDStage at) {
+              ThreeDCrashGuard.markSync(
+                ThreeDBreadcrumb(
+                  scene: sceneNumber,
+                  stage: at,
+                  at: DateTime.now(),
+                  assetKey: assetKey,
+                  assetTitle: asset.title,
+                ),
+              );
+
+              report(
+                _sceneFraction(index, cues.length, at),
+                'مشهد $sceneNumber من ${cues.length} — ${at.label}: ${asset.title}',
+                stage: at,
+                scene: sceneNumber,
+              );
+            }
 
             // Records the finished stage and moves on to the next one.
             void finish(ThreeDStage done, {ThreeDStage? next}) {
@@ -523,7 +651,10 @@ class ThreeDScenePipeline {
                 detail: asset.title,
               );
 
-              if (next != null) stage = next;
+              if (next != null) {
+                stage = next;
+                announce(next);
+              }
 
               stopwatch
                 ..reset()
@@ -531,6 +662,8 @@ class ThreeDScenePipeline {
             }
 
             try {
+              announce(ThreeDStage.download);
+
               onStatus?.call(
                 'جاري تنزيل المجسم: ${asset.title}...',
               );
@@ -571,7 +704,7 @@ class ThreeDScenePipeline {
                 const Duration(milliseconds: 350),
               );
 
-              await _waitUntilRenderable(viewId);
+              await waitUntilRenderable(viewId);
 
               finish(ThreeDStage.ready, next: ThreeDStage.capture);
 
@@ -685,26 +818,53 @@ class ThreeDScenePipeline {
         'جاري تركيب ${sceneClips.length} مشاهد 3D في الفيديو...',
       );
 
+      report(
+        _sceneShare,
+        'اكتمل تجهيز المشاهد؛ جاري التركيب مع الفيديو...',
+        stage: ThreeDStage.composite,
+      );
+
+      // From here on a crash belongs to tracking / compositing, not a model.
+      ThreeDCrashGuard.markSync(
+        ThreeDBreadcrumb(
+          scene: 0,
+          stage: ThreeDStage.composite,
+          at: DateTime.now(),
+        ),
+      );
+
       final watch = Stopwatch()..start();
       compositeWatch = watch;
 
       String? anchoredPath;
 
       if (personAnchoringEnabled && PersonTrackingService.hasDetector) {
-        try {
-          anchoredPath = await _compositeAnchored(
-            videoPath: videoPath,
-            scenes: sceneClips,
-            timeline: timeline,
-            settings: settings,
-            notes: notes,
-            onStatus: onStatus,
-          );
-        } catch (error) {
-          anchoredPath = null;
+        if (await ThreeDCrashGuard.isAnchoringDisabled()) {
           notes.add(
-            'تعذر ربط المجسمات بالشخص؛ تم استخدام التركيب العادي: $error',
+            'ربط المجسمات بالشخص معطّل بعد انهيار سابق؛ استُخدم التركيب العادي '
+            '(يمكن إعادة تفعيله من تقرير 3D).',
           );
+        } else {
+          try {
+            anchoredPath = await _compositeAnchored(
+              videoPath: videoPath,
+              scenes: sceneClips,
+              timeline: timeline,
+              settings: settings,
+              notes: notes,
+              onStatus: onStatus,
+              onPhase: (fraction, message) => report(
+                fraction,
+                message,
+                stage: ThreeDStage.composite,
+              ),
+            );
+          } catch (error) {
+            anchoredPath = null;
+            notes.add(
+              'تعذر ربط المجسمات بالشخص؛ تم استخدام التركيب العادي: $error',
+            );
+          }
         }
       }
 
@@ -719,6 +879,11 @@ class ThreeDScenePipeline {
             duration: timeline.duration,
             maximumQuality: settings.maximumQuality,
             onStatus: onStatus,
+            onProgress: (value) => report(
+              _compositeStart + (1.0 - _compositeStart) * _unit(value),
+              'جاري دمج مشاهد 3D مع الفيديو...',
+              stage: ThreeDStage.composite,
+            ),
           );
 
       final compositeFile = File(compositePath);
@@ -766,6 +931,12 @@ class ThreeDScenePipeline {
 
       notes.add(summary.headline);
 
+      report(
+        1.0,
+        'اكتمل دمج مشاهد 3D مع الفيديو النهائي.',
+        stage: ThreeDStage.composite,
+      );
+
       onStatus?.call(
         'اكتمل دمج مشاهد 3D مع الفيديو النهائي.',
       );
@@ -801,6 +972,11 @@ class ThreeDScenePipeline {
         summary: summary,
       );
     } finally {
+      // The 3D phase ended normally (success or handled failure): there was
+      // no crash, so the breadcrumb is removed and the log gets its headline.
+      ThreeDCrashGuard.appendLogSync(summary.headline);
+      ThreeDCrashGuard.clearBreadcrumbSync();
+
       service.dispose();
 
       for (final directoryPath in temporaryDirectories) {

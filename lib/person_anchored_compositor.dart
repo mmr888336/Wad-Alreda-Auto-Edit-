@@ -42,6 +42,7 @@ class PersonAnchoredCompositor {
     required PersonTrack? track,
     bool maximumQuality = true,
     void Function(String message)? onStatus,
+    void Function(double progress)? onProgress,
   }) async {
     final sourceFile = File(videoPath);
 
@@ -190,7 +191,8 @@ class PersonAnchoredCompositor {
         'جاري دمج $anchored مشاهد 3D مرتبطة بالشخص مع الفيديو...',
       );
 
-      final encoded = await SilenceCutter.encode(command, duration, null);
+      final encoded =
+          await SilenceCutter.encode(command, duration, onProgress);
 
       final outputFile = File(outputPath);
 

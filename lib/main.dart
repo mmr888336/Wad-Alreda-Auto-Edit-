@@ -17,12 +17,22 @@ import 'person_tracking_test_page.dart';
 import 'projects_page.dart';
 import 'settings.dart';
 import 'silence_cutter.dart';
+import 'three_d_crash_guard.dart';
+import 'three_d_diagnostics_page.dart';
+import 'three_d_progress.dart';
 import 'three_d_render_surface.dart';
 import 'three_d_scene_pipeline.dart';
 import 'timeline_preview_page.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // If the last run ended abruptly inside the 3D phase, find out where, block
+  // the suspect model and remember it so the home page can say so.
+  try {
+    await ThreeDCrashGuard.recoverPreviousCrash();
+  } catch (_) {}
+
   runApp(const AutoEditApp());
 }
 
@@ -228,6 +238,51 @@ class _HomePageState extends State<HomePage> {
   /// Native Filament PlatformView identifier.
   int? _threeDViewId;
 
+  /// Set when the previous run ended abruptly inside the 3D phase.
+  ThreeDBreadcrumb? _crashNotice;
+
+  DateTime _lastProgressPaint = DateTime.fromMillisecondsSinceEpoch(0);
+
+  @override
+  void initState() {
+    super.initState();
+    _crashNotice = ThreeDCrashGuard.recovered;
+  }
+
+  /// FFmpeg reports its statistics many times per second. Repainting the
+  /// whole page (which holds the native 3D view) that often is wasteful and
+  /// can starve the UI, so the bar is repainted at most ~2.5 times a second.
+  /// A new status message is always painted at once.
+  void _updateProgress({double? value, String? message}) {
+    if (!mounted) return;
+
+    final messageChanged = message != null && message != status;
+
+    final now = DateTime.now();
+    final due = now.difference(_lastProgressPaint) >=
+        const Duration(milliseconds: 400);
+
+    final valueChanged = value != null &&
+        (progress == null || (value - progress!).abs() >= 0.005);
+
+    if (!messageChanged && !(valueChanged && due)) return;
+
+    _lastProgressPaint = now;
+
+    setState(() {
+      if (value != null) progress = value;
+      if (message != null) status = message;
+    });
+  }
+
+  void _openDiagnostics() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => const ThreeDDiagnosticsPage(),
+      ),
+    );
+  }
+
   void _onThreeDPlatformViewCreated(int id) {
     if (!mounted) return;
 
@@ -289,11 +344,7 @@ class _HomePageState extends State<HomePage> {
           }
         },
         onProgress: (value) {
-          if (mounted) {
-            setState(() {
-              progress = value * 0.12;
-            });
-          }
+          _updateProgress(value: value * 0.12);
         },
       );
 
@@ -308,11 +359,7 @@ class _HomePageState extends State<HomePage> {
           }
         },
         onProgress: (value) {
-          if (mounted) {
-            setState(() {
-              progress = 0.12 + value * 0.68;
-            });
-          }
+          _updateProgress(value: 0.12 + value * 0.68);
         },
       );
 
@@ -325,7 +372,7 @@ class _HomePageState extends State<HomePage> {
       } else if (settings.online3DAssetsEnabled) {
         if (mounted) {
           setState(() {
-            progress = 0.82;
+            progress = 0.80;
             status = 'جاري تجهيز مشاهد 3D وربطها بالتوقيتات...';
           });
         }
@@ -336,12 +383,10 @@ class _HomePageState extends State<HomePage> {
           timeline: enhanced.timelineProject,
           settings: settings,
           onStatus: (message) {
-            if (!mounted) return;
-
-            setState(() {
-              status = message;
-              progress = 0.84;
-            });
+            _updateProgress(message: message);
+          },
+          onProgress: (ThreeDProgress live) {
+            _updateProgress(value: live.overall(), message: live.message);
           },
         );
 
@@ -539,6 +584,7 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final current = result;
+    final crashNotice = _crashNotice;
 
     return Scaffold(
       appBar: AppBar(
@@ -547,6 +593,13 @@ class _HomePageState extends State<HomePage> {
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
+          IconButton(
+            tooltip: AppLocalizations.isRtl
+                ? 'تقرير تشخيص 3D'
+                : '3D diagnostics report',
+            icon: const Icon(Icons.bug_report_outlined),
+            onPressed: busy ? null : _openDiagnostics,
+          ),
           IconButton(
             tooltip: AppLocalizations.isRtl
                 ? 'اختبار محرك 3D'
@@ -590,6 +643,40 @@ class _HomePageState extends State<HomePage> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(18, 18, 18, 30),
         children: [
+          if (crashNotice != null) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2C1820),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF8A3B4F)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'التطبيق أُغلق فجأة في التصدير السابق أثناء: '
+                    '${crashNotice.describe()}\n'
+                    '${ThreeDCrashGuard.adviceFor(crashNotice)}',
+                    style: const TextStyle(fontSize: 13, height: 1.6),
+                  ),
+                  Row(
+                    children: [
+                      TextButton(
+                        onPressed: busy ? null : _openDiagnostics,
+                        child: const Text('فتح تقرير 3D'),
+                      ),
+                      TextButton(
+                        onPressed: () => setState(() => _crashNotice = null),
+                        child: const Text('إخفاء'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
@@ -748,7 +835,16 @@ class _HomePageState extends State<HomePage> {
               minHeight: 5,
               borderRadius: BorderRadius.circular(10),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 6),
+            Text(
+              '${((progress ?? 0) * 100).round()}%',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Colors.white70,
+              ),
+            ),
+            const SizedBox(height: 10),
           ],
           Container(
             padding: const EdgeInsets.all(14),
