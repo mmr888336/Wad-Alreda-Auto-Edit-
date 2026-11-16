@@ -235,18 +235,38 @@ class _HomePageState extends State<HomePage> {
   bool busy = false;
   bool saving = false;
 
-  /// Native Filament PlatformView identifier.
+  /// Native Filament PlatformView identifier. Null while the view is not
+  /// mounted.
   int? _threeDViewId;
+
+  /// The user turned the 3D test view on with the button on its card.
+  bool _showThreeDPanel = false;
+
+  /// The 3D view is mounted automatically for the 3D phase of an export.
+  bool _threeDExportActive = false;
+
+  final ScrollController _scrollController = ScrollController();
 
   /// Set when the previous run ended abruptly inside the 3D phase.
   ThreeDBreadcrumb? _crashNotice;
 
   DateTime _lastProgressPaint = DateTime.fromMillisecondsSinceEpoch(0);
 
+  /// The native Filament view renders continuously, which heats the phone, so
+  /// it is only mounted while the user asks for it or an export needs it.
+  bool get _threeDSurfaceMounted =>
+      _showThreeDPanel || _threeDExportActive;
+
   @override
   void initState() {
     super.initState();
     _crashNotice = ThreeDCrashGuard.recovered;
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
   /// FFmpeg reports its statistics many times per second. Repainting the
@@ -284,11 +304,72 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _onThreeDPlatformViewCreated(int id) {
-    if (!mounted) return;
+    if (!mounted || !_threeDSurfaceMounted) return;
 
     setState(() {
       _threeDViewId = id;
     });
+  }
+
+  /// Button on the 3D card: shows or hides the native 3D test view.
+  void _toggleThreeDPanel() {
+    if (busy) return;
+
+    setState(() {
+      _showThreeDPanel = !_showThreeDPanel;
+
+      if (!_threeDSurfaceMounted) {
+        _threeDViewId = null;
+      }
+    });
+  }
+
+  /// Mounts the 3D view for the 3D phase of an export and waits until the
+  /// native view reports its id. Returns null if it never connects.
+  Future<int?> _mountThreeDSurfaceForExport() async {
+    if (!mounted) return null;
+
+    setState(() {
+      _threeDExportActive = true;
+    });
+
+    // The view must be on screen to be captured.
+    if (_scrollController.hasClients && _scrollController.offset > 0) {
+      _scrollController.jumpTo(0);
+    }
+
+    for (var attempt = 0; attempt < 100; attempt++) {
+      final id = _threeDViewId;
+      if (id != null) return id;
+
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      if (!mounted) return null;
+    }
+
+    return _threeDViewId;
+  }
+
+  /// Unmounts the 3D view (frees its GPU memory and stops the heating).
+  /// Safe to call more than once.
+  Future<void> _releaseThreeDSurface() async {
+    if (!_threeDExportActive &&
+        !_showThreeDPanel &&
+        _threeDViewId == null) {
+      return;
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _threeDExportActive = false;
+      _showThreeDPanel = false;
+      _threeDViewId = null;
+    });
+
+    // Give the platform view a moment to free its memory before FFmpeg
+    // starts the heavy compositing.
+    await Future<void>.delayed(const Duration(milliseconds: 600));
   }
 
   Future<void> _pick() async {
@@ -325,8 +406,9 @@ class _HomePageState extends State<HomePage> {
 
   /// Runs the original editing engine first, then adds native 3D scenes.
   ///
-  /// The 3D stage runs after the ad page is closed, while HomePage and its
-  /// native Filament surface are visible again.
+  /// The 3D stage runs after the ad page is closed. The native Filament view
+  /// is mounted only for that stage and released as soon as the last scene is
+  /// captured.
   Future<_PipelineOut> _pipeline(
     String source,
     AppSettings settings,
@@ -363,13 +445,31 @@ class _HomePageState extends State<HomePage> {
         },
       );
 
-      final viewId = _threeDViewId;
+      final threeDEnabled = settings.online3DAssetsEnabled;
+      int? viewId;
 
-      if (viewId == null) {
+      if (threeDEnabled) {
+        if (mounted) {
+          setState(() {
+            progress = 0.80;
+            status = 'جاري تشغيل محرك 3D...';
+          });
+        }
+
+        viewId = await _mountThreeDSurfaceForExport();
+      }
+
+      if (!threeDEnabled) {
         enhanced.notes.add(
-          'تم تصدير الفيديو الأساسي، لكن شاشة Filament لم تكن متصلة؛ لم تتم إضافة مشاهد 3D.',
+          'مصادر المجسمات ثلاثية الأبعاد معطلة من الإعدادات؛ تم تصدير الفيديو الأساسي.',
         );
-      } else if (settings.online3DAssetsEnabled) {
+      } else if (viewId == null) {
+        await _releaseThreeDSurface();
+
+        enhanced.notes.add(
+          'تم تصدير الفيديو الأساسي، لكن محرك 3D لم يتصل في الوقت المناسب؛ لم تتم إضافة مشاهد 3D.',
+        );
+      } else {
         if (mounted) {
           setState(() {
             progress = 0.80;
@@ -377,30 +477,31 @@ class _HomePageState extends State<HomePage> {
           });
         }
 
-        final threeDResult = await ThreeDScenePipeline.apply(
-          viewId: viewId,
-          videoPath: enhanced.videoPath,
-          timeline: enhanced.timelineProject,
-          settings: settings,
-          onStatus: (message) {
-            _updateProgress(message: message);
-          },
-          onProgress: (ThreeDProgress live) {
-            _updateProgress(value: live.overall(), message: live.message);
-          },
-        );
-
-        enhanced.notes.addAll(threeDResult.notes);
-
-        if (threeDResult.applied) {
-          enhanced.notes.add(
-            'تم دمج ${threeDResult.scenesRendered} مشهد 3D متحرك في الفيديو النهائي.',
+        try {
+          final threeDResult = await ThreeDScenePipeline.apply(
+            viewId: viewId,
+            videoPath: enhanced.videoPath,
+            timeline: enhanced.timelineProject,
+            settings: settings,
+            onStatus: (message) {
+              _updateProgress(message: message);
+            },
+            onProgress: (ThreeDProgress live) {
+              _updateProgress(value: live.overall(), message: live.message);
+            },
+            onRenderingDone: _releaseThreeDSurface,
           );
+
+          enhanced.notes.addAll(threeDResult.notes);
+
+          if (threeDResult.applied) {
+            enhanced.notes.add(
+              'تم دمج ${threeDResult.scenesRendered} مشهد 3D متحرك في الفيديو النهائي.',
+            );
+          }
+        } finally {
+          await _releaseThreeDSurface();
         }
-      } else {
-        enhanced.notes.add(
-          'مصادر المجسمات ثلاثية الأبعاد معطلة من الإعدادات؛ تم تصدير الفيديو الأساسي.',
-        );
       }
 
       if (mounted) {
@@ -484,6 +585,9 @@ class _HomePageState extends State<HomePage> {
         });
       }
     } finally {
+      // Whatever happened, the native 3D view must not stay mounted.
+      await _releaseThreeDSurface();
+
       if (mounted) {
         setState(() {
           busy = false;
@@ -641,6 +745,7 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       body: ListView(
+        controller: _scrollController,
         padding: const EdgeInsets.fromLTRB(18, 18, 18, 30),
         children: [
           if (crashNotice != null) ...[
@@ -723,8 +828,9 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // Keep the real native Filament Surface mounted on HomePage.
-          // The automatic renderer needs this SurfaceView to capture frames.
+          // The native Filament view is only mounted while the user turns it
+          // on here or while an export is rendering its 3D scenes. It renders
+          // continuously, so leaving it mounted all the time heats the phone.
           const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.all(12),
@@ -738,36 +844,92 @@ class _HomePageState extends State<HomePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Row(
+                Row(
                   children: [
-                    Icon(
+                    const Icon(
                       Icons.view_in_ar_rounded,
                       color: Color(0xFFB7A8FF),
                     ),
-                    SizedBox(width: 8),
-                    Text(
-                      'Filament 3D Render Engine',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'Filament 3D Render Engine',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
+                    ),
+                    IconButton(
+                      tooltip: _threeDSurfaceMounted
+                          ? (AppLocalizations.isRtl
+                              ? 'إيقاف محرك 3D'
+                              : 'Turn 3D engine off')
+                          : (AppLocalizations.isRtl
+                              ? 'تشغيل محرك 3D'
+                              : 'Turn 3D engine on'),
+                      visualDensity: VisualDensity.compact,
+                      icon: Icon(
+                        _threeDSurfaceMounted
+                            ? Icons.block_rounded
+                            : Icons.play_circle_outline_rounded,
+                        color: busy
+                            ? Colors.white24
+                            : const Color(0xFFB7A8FF),
+                      ),
+                      onPressed: busy ? null : _toggleThreeDPanel,
                     ),
                   ],
                 ),
                 const SizedBox(height: 10),
-                ThreeDRenderSurface(
-                  onPlatformViewCreated: _onThreeDPlatformViewCreated,
-                  height: 280,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _threeDViewId == null
-                      ? 'جاري تهيئة محرك 3D...'
-                      : 'محرك 3D متصل وجاهز لاستقبال المشاهد.',
-                  style: const TextStyle(
-                    color: Colors.white60,
-                    fontSize: 11,
+                if (_threeDSurfaceMounted) ...[
+                  Center(
+                    child: SizedBox(
+                      width: 240,
+                      child: ThreeDRenderSurface(
+                        onPlatformViewCreated:
+                            _onThreeDPlatformViewCreated,
+                        height: 240,
+                      ),
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 8),
+                  if (_threeDExportActive) ...[
+                    LinearProgressIndicator(
+                      value: progress,
+                      minHeight: 4,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      AppLocalizations.runtime(status).split('\n').first,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11,
+                        height: 1.5,
+                      ),
+                    ),
+                  ] else
+                    Text(
+                      _threeDViewId == null
+                          ? 'جاري تهيئة محرك 3D...'
+                          : 'محرك 3D متصل وجاهز لاستقبال المشاهد.',
+                      style: const TextStyle(
+                        color: Colors.white60,
+                        fontSize: 11,
+                      ),
+                    ),
+                ] else
+                  const Text(
+                    'محرك 3D متوقف لتقليل حرارة الجوال، ويعمل تلقائياً أثناء '
+                    'التصدير فقط. اضغط زر التشغيل لتجربته.',
+                    style: TextStyle(
+                      color: Colors.white60,
+                      fontSize: 11,
+                      height: 1.5,
+                    ),
+                  ),
               ],
             ),
           ),
@@ -869,6 +1031,11 @@ class _HomePageState extends State<HomePage> {
                   File(coverPath!),
                   height: 230,
                   fit: BoxFit.contain,
+                  // Decode a small copy: a full-size 2K cover wastes memory
+                  // right when the export finishes.
+                  cacheHeight: 700,
+                  errorBuilder: (context, error, stackTrace) =>
+                      const SizedBox.shrink(),
                 ),
               ),
             ],
