@@ -69,11 +69,26 @@ class _ThreeDCue {
 /// [ThreeDCrashGuard]) so it survives a crash.
 ///
 /// Live progress is reported through `onProgress` for the whole phase.
+///
+/// The native Filament view is only needed while scenes are rendered. As soon
+/// as the last scene is captured the pipeline calls `onRenderingDone`, so the
+/// screen can release the view (GPU memory and heat) before person tracking
+/// and compositing start.
 class ThreeDScenePipeline {
   ThreeDScenePipeline._();
 
-  static const int _maximumScenesPerExport = 8;
+  static const int _maximumScenesPerExport = 6;
   static const int _maximumAttemptsPerScene = 4;
+
+  /// A transient capture failure (for example PixelCopy right after a model
+  /// swap) is retried on the same model instead of throwing it away.
+  static const int _maximumCaptureTries = 3;
+
+  // The 3D card is drawn at ~46% of the video's short edge, so a ~620 px
+  // square at 18 fps is plenty and captures far faster than the previous
+  // full-size 24 fps render.
+  static const int _captureSize = 624;
+  static const int _captureFrameRate = 18;
 
   // Share of the 3D phase bar: scenes, then person tracking, then compositing.
   static const double _sceneShare = 0.60;
@@ -383,6 +398,52 @@ class ThreeDScenePipeline {
     );
   }
 
+  /// Captures one scene. A PixelCopy failure (the surface had no frame to
+  /// copy yet, for example right after a model swap) is transient: the same
+  /// model is captured again after a short wait instead of being discarded
+  /// and downloading a different one.
+  static Future<String> _captureWithRetry({
+    required int viewId,
+    required double durationSeconds,
+    void Function(String message)? onStatus,
+  }) async {
+    var attempt = 0;
+
+    while (true) {
+      attempt++;
+
+      try {
+        return await FilamentSceneExporter.captureAndEncode(
+          viewId: viewId,
+          durationSeconds: durationSeconds,
+          frameRate: _captureFrameRate,
+          width: _captureSize,
+          height: _captureSize,
+          onStatus: onStatus,
+        );
+      } catch (error) {
+        final text = '$error';
+
+        final transient =
+            text.contains('PIXEL_COPY') || text.contains('PixelCopy');
+
+        if (!transient || attempt >= _maximumCaptureTries) {
+          rethrow;
+        }
+
+        onStatus?.call(
+          'تعذر التقاط الإطار؛ إعادة المحاولة ($attempt من $_maximumCaptureTries)...',
+        );
+
+        await Future<void>.delayed(
+          Duration(milliseconds: 700 * attempt),
+        );
+
+        await waitUntilRenderable(viewId);
+      }
+    }
+  }
+
   /// Phase 1 + 2: tracks the main person and composites the scenes around
   /// them. Returns null (and removes any partial file) when nothing could be
   /// anchored, so the caller uses the previous panel compositing.
@@ -401,10 +462,10 @@ class ThreeDScenePipeline {
     final run = await PersonTrackingService.analyzeVideo(
       videoPath,
       config: TrackingConfig(
-        sampleFps: 8,
+        sampleFps: 6,
         frameWidth: 480,
         maxSeconds: timeline.duration.clamp(1.0, 120.0).toDouble(),
-        maxFrames: 960,
+        maxFrames: 720,
       ),
       onStatus: onStatus,
       onProgress: (value) => onPhase?.call(
@@ -460,6 +521,10 @@ class ThreeDScenePipeline {
     required AppSettings settings,
     void Function(String message)? onStatus,
     void Function(ThreeDProgress progress)? onProgress,
+
+    /// Called once every scene is rendered and the native Filament view is no
+    /// longer needed (before person tracking and compositing).
+    Future<void> Function()? onRenderingDone,
   }) async {
     final notes = <String>[];
     final sceneClips = <ThreeDSceneClip>[];
@@ -712,13 +777,9 @@ class ThreeDScenePipeline {
                 'جاري تصوير حركة الكاميرا للمشهد $sceneNumber...',
               );
 
-              final capturedPath =
-                  await FilamentSceneExporter.captureAndEncode(
+              final capturedPath = await _captureWithRetry(
                 viewId: viewId,
                 durationSeconds: cue.duration,
-                frameRate: 24,
-                width: 720,
-                height: 720,
                 onStatus: onStatus,
               );
 
@@ -812,6 +873,15 @@ class ThreeDScenePipeline {
           notes: notes,
           summary: summary,
         );
+      }
+
+      // Every scene is rendered: the native Filament view is not needed any
+      // more. Let the screen release it now, so its GPU memory is free (and
+      // the phone cools down) before tracking and compositing start.
+      try {
+        await onRenderingDone?.call();
+      } catch (_) {
+        // Releasing the view must never stop the export.
       }
 
       onStatus?.call(
