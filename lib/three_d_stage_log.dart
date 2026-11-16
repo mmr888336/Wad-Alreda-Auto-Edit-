@@ -10,6 +10,10 @@ enum ThreeDStage {
   camera('حركة الكاميرا'),
   ready('جاهزية العرض'),
   capture('الالتقاط'),
+
+  /// Releasing the native Filament view after the last scene is captured.
+  /// It is its own stage, so a crash here is never blamed on the last model.
+  rendererRelease('تحرير المحرك'),
   composite('التركيب');
 
   const ThreeDStage(this.label);
@@ -42,19 +46,69 @@ class ThreeDStageEvent {
     return '[$where] ${stage.label}: $status '
         '(${elapsed.inMilliseconds}ms)$extra';
   }
+
+  /// The log line written when a stage STARTS. Together with [toLine] (written
+  /// when it ends) the log shows exactly which stage was running at a crash.
+  static String startLine(
+    int scene,
+    ThreeDStage stage, {
+    String? detail,
+  }) {
+    final where = scene == 0 ? 'التصدير' : 'مشهد $scene';
+    final text = detail?.trim() ?? '';
+    final extra = text.isEmpty ? '' : ' — $text';
+    return '[$where] ${stage.label}: بدأ$extra';
+  }
+}
+
+/// Reads the on-disk export log. The log is written line by line, so it can
+/// confirm that a stage finished even when the crash note is out of date.
+class ThreeDLogReader {
+  ThreeDLogReader._();
+
+  /// True when [log] holds a SUCCESS line for [stage] of [scene] (and, when
+  /// [assetTitle] is given, for that model). A start line does not count.
+  static bool succeeded(
+    String log, {
+    required int scene,
+    required ThreeDStage stage,
+    String assetTitle = '',
+  }) {
+    final where = scene == 0 ? 'التصدير' : 'مشهد $scene';
+    final prefix = '[$where] ${stage.label}: نجح';
+    final title = assetTitle.trim();
+
+    for (final raw in log.split('\n')) {
+      final line = raw.trim();
+
+      if (!line.startsWith(prefix)) continue;
+      if (title.isEmpty || line.contains(title)) return true;
+    }
+
+    return false;
+  }
 }
 
 /// Everything the 3D pipeline did during one export.
 class ThreeDExportSummary {
-  ThreeDExportSummary({this.onEvent});
+  ThreeDExportSummary({this.onEvent, this.onStart});
 
-  /// Called for every recorded event (used for live logging).
+  /// Called for every recorded (finished) event (used for live logging).
   final void Function(ThreeDStageEvent event)? onEvent;
+
+  /// Called when a stage starts (used for live logging).
+  final void Function(int scene, ThreeDStage stage, String? detail)? onStart;
 
   final List<ThreeDStageEvent> _events = <ThreeDStageEvent>[];
 
   List<ThreeDStageEvent> get events =>
       List<ThreeDStageEvent>.unmodifiable(_events);
+
+  /// Notes that a stage started. It is only logged: start notes are not
+  /// events, so they never change the failure counts or the headline.
+  void begin(int scene, ThreeDStage stage, {String? detail}) {
+    onStart?.call(scene, stage, detail);
+  }
 
   void record(
     int scene,
