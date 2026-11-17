@@ -16,13 +16,16 @@ class KhronosModel {
 class KhronosModelCatalog {
   KhronosModelCatalog._();
 
+  // Tags are matched with "contains" in both directions, so very short tags
+  // (for example "ai" or "gem") would match unrelated words such as "train"
+  // or "management". Keep tags at four letters or more.
   static const List<KhronosModel> models = <KhronosModel>[
     KhronosModel('Lantern', <String>['lantern', 'lamp', 'light', 'candle', 'crescent', 'hope', 'idea', 'guide', 'night']),
     KhronosModel('Avocado', <String>['avocado', 'fruit', 'food']),
     KhronosModel('AntiqueCamera', <String>['camera', 'photo', 'video', 'film', 'antique', 'cinema', 'movie', 'memory', 'story']),
     KhronosModel('BoomBox', <String>['radio', 'speaker', 'music', 'boombox', 'sound', 'audio', 'microphone']),
     KhronosModel('BarramundiFish', <String>['fish', 'sea', 'ocean', 'animal']),
-    KhronosModel('DamagedHelmet', <String>['helmet', 'robot', 'space', 'technology', 'shield', 'future', 'innovation', 'cyber', 'ai']),
+    KhronosModel('DamagedHelmet', <String>['helmet', 'robot', 'space', 'technology', 'shield', 'future', 'innovation', 'cyber']),
     KhronosModel('Duck', <String>['duck', 'bird', 'toy', 'animal']),
     KhronosModel('Fox', <String>['fox', 'animal', 'nature', 'wildlife']),
     KhronosModel('WaterBottle', <String>['bottle', 'water', 'drink']),
@@ -33,7 +36,7 @@ class KhronosModelCatalog {
     KhronosModel('BrainStem', <String>['robot', 'machine', 'technology', 'brain']),
     KhronosModel('ABeautifulGame', <String>['chess', 'game', 'strategy', 'board', 'scale', 'balance']),
     KhronosModel('GlamVelvetSofa', <String>['sofa', 'couch', 'furniture', 'house']),
-    KhronosModel('MosquitoInAmber', <String>['amber', 'mosquito', 'insect', 'time', 'hourglass', 'clock', 'crystal', 'gold', 'coins', 'luxury', 'premium', 'gem', 'diamond', 'jewel', 'wealth', 'money', 'rich', 'value', 'treasure', 'abstract']),
+    KhronosModel('MosquitoInAmber', <String>['amber', 'mosquito', 'insect', 'time', 'hourglass', 'clock', 'crystal', 'gold', 'coins', 'luxury', 'premium', 'diamond', 'jewel', 'wealth', 'money', 'rich', 'value', 'treasure', 'abstract']),
   ];
 
   /// Models used when no keyword matches. Only warm, metallic, cinematic
