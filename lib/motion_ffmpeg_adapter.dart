@@ -15,7 +15,13 @@
 ///  * a scene with an active depth camera (see DepthCameraEngine) has the
 ///    camera folded into the position and size expression of every layer,
 ///    according to the depth of the layer: parallax, orbit, zoom and
-///    perspective change cost no extra filter and no extra input.
+///    perspective change cost no extra filter and no extra input;
+///  * a layer whose asset is marked [MotionRenderAsset.screen] (light-type
+///    VFX overlays) is composited with a real screen blend instead of a
+///    normal alpha overlay: the layer is first placed on black, then blended
+///    onto the picture in RGB, so glows, rays and particles add up like
+///    light. [MotionFfmpegAdapter.build] can switch this off ([blendModes])
+///    as a fallback.
 ///
 /// The plan is returned as an argument list (no shell quoting involved).
 library;
@@ -36,10 +42,15 @@ class MotionRenderAsset {
   /// Width on screen at layer scale 1, as a fraction of the canvas width.
   final double widthFraction;
 
+  /// Composite with a screen blend (light adds to the picture) instead of a
+  /// normal alpha overlay.
+  final bool screen;
+
   const MotionRenderAsset({
     required this.path,
     this.aspect = 1.0,
     this.widthFraction = 0.12,
+    this.screen = false,
   });
 }
 
@@ -217,11 +228,14 @@ class MotionFfmpegAdapter {
 
   /// Builds the FFmpeg plan. Set [depthCamera] to false to render every
   /// scene flat, ignoring the scene cameras (the renderer uses this as a
-  /// fallback so a camera problem never costs the whole clip).
+  /// fallback so a camera problem never costs the whole clip). Set
+  /// [blendModes] to false to composite screen-blend layers with a normal
+  /// overlay (a fallback for FFmpeg builds that cannot do the RGB blend).
   static MotionFfmpegPlan build({
     required MotionProject project,
     required Map<String, MotionRenderAsset> assets,
     bool depthCamera = true,
+    bool blendModes = true,
   }) {
     project.validate();
     if (project.scenes.isEmpty) {
@@ -319,12 +333,29 @@ class MotionFfmpegAdapter {
         chains.add('[$inputIndex:v]${parts.join(',')}[$layerLabel]');
 
         final next = 'b${si}_$step';
-        chains.add(
-          '[$current][$layerLabel]overlay='
-          "x='W*($xExpr)-w/2':y='H*($yExpr)-h/2':"
-          "enable='between(t,${_n(off)},${_n(layer.end - scene.start)})':"
-          'format=auto[$next]',
-        );
+        final placement =
+            "x='W*($xExpr)-w/2':y='H*($yExpr)-h/2':"
+            "enable='between(t,${_n(off)},${_n(layer.end - scene.start)})':"
+            'format=auto';
+        if (blendModes && asset.screen) {
+          // Light-type layer: put it on black, then screen-blend the result
+          // onto the picture in RGB. Where the layer is hidden (or outside
+          // its time range) the black base leaves the picture unchanged.
+          final base = 'kb${si}_$step';
+          final lit = 'kl${si}_$step';
+          final curRgb = 'kc${si}_$step';
+          final litRgb = 'kq${si}_$step';
+          chains.add(
+            'color=c=black:s=${project.width}x${project.height}:'
+            'r=${project.frameRate}:d=${_n(dur)}[$base]',
+          );
+          chains.add('[$base][$layerLabel]overlay=$placement[$lit]');
+          chains.add('[$current]format=gbrp[$curRgb]');
+          chains.add('[$lit]format=gbrp[$litRgb]');
+          chains.add('[$curRgb][$litRgb]blend=all_mode=screen[$next]');
+        } else {
+          chains.add('[$current][$layerLabel]overlay=$placement[$next]');
+        }
         current = next;
       }
 

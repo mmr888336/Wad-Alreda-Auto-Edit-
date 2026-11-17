@@ -11,8 +11,13 @@
 /// Besides pixel sprites, words and backgrounds the renderer draws semantic
 /// library visuals and transparent VFX overlays (procedural PNGs), and
 /// applies the cinematic look stored in the project's `look` asset as a
-/// post-grade. If the graded render fails it is retried without the grade, so
-/// a filter missing from the bundled FFmpegKit never costs the cutaway.
+/// post-grade. The overlays move (see [MotionVfxAnimator]: smoke rises,
+/// embers climb, rays sweep...), light-type overlays are screen-blended, and
+/// the look includes real Bloom and Halation (see [CinematicVfx.buildGraph]).
+/// Every step has a fallback: if the full look fails the single-stream grade
+/// is tried, then no grade at all; if the screen blend fails the overlays
+/// are composited normally; if the camera render fails the clip is rendered
+/// flat. A filter missing from the bundled FFmpegKit never costs the cutaway.
 ///
 /// The cutaway is built by the continuous scene generator (several beats,
 /// each with its own composition, see [ContinuousSceneGenerator]); if that
@@ -39,6 +44,7 @@ import 'depth_camera_planner.dart';
 import 'motion_ffmpeg_adapter.dart';
 import 'motion_graphics.dart' show MotionMood;
 import 'motion_scene_json.dart';
+import 'motion_vfx_animator.dart';
 import 'motion_vfx_overlay.dart';
 import 'motion_visual_library.dart';
 import 'pixel_art_sprites.dart';
@@ -126,31 +132,40 @@ class MotionCutawayRenderer {
     return PixelPngEncoder.encodeRgba(rgba, width: w, height: h);
   }
 
-  /// The single-stream filters of the cinematic look stored in [specs], or an
-  /// empty list when there is none (or VFX are switched off).
-  static List<String> _lookFilters(Map<String, SceneAssetSpec> specs) {
-    if (!ReferenceSceneBuilder.vfxEnabled) return const <String>[];
+  /// The effects of the cinematic look stored in [specs], or an empty list
+  /// when there is none (or VFX are switched off).
+  static List<CinematicEffect> _lookEffects(Map<String, SceneAssetSpec> specs) {
+    if (!ReferenceSceneBuilder.vfxEnabled) return const <CinematicEffect>[];
     for (final spec in specs.values) {
       if (spec.kind != SceneAssetKind.look) continue;
       final preset = CinematicVfx.preset(spec.spriteKey ?? '');
-      if (preset == null) return const <String>[];
-      return CinematicVfx.safeChain(preset.effects, intensity: lookIntensity);
+      if (preset == null) return const <CinematicEffect>[];
+      return preset.effects;
     }
-    return const <String>[];
+    return const <CinematicEffect>[];
   }
 
-  /// Same plan with [filters] appended to the composed picture.
+  /// Same plan with the single-stream [filters] appended to the composed
+  /// picture.
   static MotionFfmpegPlan _withLook(
     MotionFfmpegPlan plan,
     List<String> filters,
   ) {
+    return _withGraph(
+      plan,
+      '[${plan.outputLabel}]${filters.join(',')}[vfx]',
+    );
+  }
+
+  /// Same plan with the complete filter [graph] (from the plan's output pad
+  /// to the pad `vfx`) appended.
+  static MotionFfmpegPlan _withGraph(MotionFfmpegPlan plan, String graph) {
     return MotionFfmpegPlan(
       width: plan.width,
       height: plan.height,
       frameRate: plan.frameRate,
       inputs: plan.inputs,
-      filterComplex:
-          '${plan.filterComplex};[${plan.outputLabel}]${filters.join(',')}[vfx]',
+      filterComplex: '${plan.filterComplex};$graph',
       outputLabel: 'vfx',
       totalDuration: plan.totalDuration,
       skippedLayerIds: plan.skippedLayerIds,
@@ -167,6 +182,33 @@ class MotionCutawayRenderer {
       if (file.existsSync()) file.deleteSync();
     } catch (_) {}
     return false;
+  }
+
+  /// Renders [plan] with the cinematic look: the complete graph first (it
+  /// includes Bloom and Halation), then the single-stream grade, then no
+  /// grade at all.
+  static Future<bool> _runWithLook(
+    MotionFfmpegPlan plan,
+    String out,
+    List<CinematicEffect> effects,
+  ) async {
+    if (effects.isNotEmpty) {
+      final graph = CinematicVfx.buildGraph(
+        input: plan.outputLabel,
+        output: 'vfx',
+        effects: effects,
+        intensity: lookIntensity,
+      );
+      if (graph != null && await _run(_withGraph(plan, graph), out)) {
+        return true;
+      }
+      final hasSplit = effects.any((e) => !CinematicVfx.isSingleStream(e));
+      final safe = CinematicVfx.safeChain(effects, intensity: lookIntensity);
+      if (hasSplit && safe.isNotEmpty && await _run(_withLook(plan, safe), out)) {
+        return true;
+      }
+    }
+    return _run(plan, out);
   }
 
   /// Stable seed from an asset key, so a re-render draws the same overlay.
@@ -288,8 +330,14 @@ class MotionCutawayRenderer {
     required List<String> temps,
   }) async {
     try {
-      final mw = built.project.width;
-      final mh = built.project.height;
+      // Moving overlays; a problem here only means static overlays.
+      var scene = built;
+      try {
+        scene = MotionVfxAnimator.animate(built);
+      } catch (_) {}
+
+      final mw = scene.project.width;
+      final mh = scene.project.height;
 
       final assets = <String, MotionRenderAsset>{};
       final spritePaths = <String, String>{};
@@ -297,7 +345,7 @@ class MotionCutawayRenderer {
       final fontSize = math.min(mw, mh) * 0.14;
       var fontReady = false;
 
-      for (final entry in built.assets.entries) {
+      for (final entry in scene.assets.entries) {
         final key = entry.key;
         final asset = entry.value;
         final safe = key.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
@@ -343,7 +391,11 @@ class MotionCutawayRenderer {
                 cached ?? '$dir/mot_${stamp}_${index}_vis_$visualId.png';
             if (cached == null) {
               await File(visualPath).writeAsBytes(
-                await MotionVisualLibrary.renderPng(visualId, size: 512),
+                await MotionVisualLibrary.renderPng(
+                  visualId,
+                  size: 512,
+                  seed: _seedFor(visualId) + index,
+                ),
                 flush: true,
               );
               temps.add(visualPath);
@@ -358,7 +410,9 @@ class MotionCutawayRenderer {
             continue;
           }
         } else if (asset.kind == SceneAssetKind.overlay) {
-          // Transparent VFX layer at the motion canvas size; a failure only
+          // Transparent VFX layer. It is drawn a little larger than the
+          // canvas (the animator sets the factor) so that its movement never
+          // shows an edge, and 1:1 so it is never scaled. A failure only
           // skips this layer.
           MotionOverlayKind? overlayKind;
           for (final kind in MotionOverlayKind.values) {
@@ -367,21 +421,28 @@ class MotionCutawayRenderer {
           if (overlayKind == null) continue;
           try {
             final overlayPath = '$dir/mot_${stamp}_${index}_$safe.png';
+            final factor = asset.widthFraction < 1.0
+                ? 1.0
+                : (asset.widthFraction > 1.5 ? 1.5 : asset.widthFraction);
+            final ow = _even(mw * factor);
+            final oh = _even(mh * factor);
+            final companion = key.startsWith('bg:fx2_');
             await File(overlayPath).writeAsBytes(
               await MotionVfxOverlay.renderPng(
                 kind: overlayKind,
-                width: mw,
-                height: mh,
+                width: ow,
+                height: oh,
                 seed: _seedFor(key),
-                intensity: 0.5,
+                intensity: companion ? 0.38 : 0.5,
               ),
               flush: true,
             );
             temps.add(overlayPath);
             assets[key] = MotionRenderAsset(
               path: overlayPath,
-              aspect: mh / mw,
-              widthFraction: 1.0,
+              aspect: oh / ow,
+              widthFraction: ow / mw,
+              screen: MotionVfxOverlay.prefersScreen(overlayKind),
             );
           } catch (_) {
             continue;
@@ -421,31 +482,36 @@ class MotionCutawayRenderer {
       }
 
       final out = '$dir/motion_scene_${stamp}_$index.mp4';
-      final look = _lookFilters(built.assets);
+      final look = _lookEffects(scene.assets);
       final hasCamera =
-          built.project.scenes.any((s) => s.camera?.isActive ?? false);
+          scene.project.scenes.any((s) => s.camera?.isActive ?? false);
+      final hasScreen = assets.values.any((a) => a.screen);
 
-      // Try the depth camera first, then the flat composition. Each attempt
-      // is tried with the cinematic grade and then without it, so a filter
-      // missing from the bundled FFmpegKit never costs the cutaway.
+      // Try the depth camera first, then the flat composition; each of them
+      // with the screen blend first, then with normal overlays. Every attempt
+      // is tried with the full cinematic grade, then the single-stream grade,
+      // then without it, so a filter missing from the bundled FFmpegKit never
+      // costs the cutaway.
       var ok = false;
       var duration = 0.0;
-      final attempts = hasCamera ? const <bool>[true, false] : const <bool>[false];
-      for (final withCamera in attempts) {
-        final plan = MotionFfmpegAdapter.build(
-          project: built.project,
-          assets: assets,
-          depthCamera: withCamera,
-        );
-        if (plan.totalDuration < 1.0) return null;
-        if (look.isNotEmpty) {
-          ok = await _run(_withLook(plan, look), out);
+      final cameras = hasCamera ? const <bool>[true, false] : const <bool>[false];
+      final blends = hasScreen ? const <bool>[true, false] : const <bool>[false];
+      for (final withCamera in cameras) {
+        for (final withBlend in blends) {
+          final plan = MotionFfmpegAdapter.build(
+            project: scene.project,
+            assets: assets,
+            depthCamera: withCamera,
+            blendModes: withBlend,
+          );
+          if (plan.totalDuration < 1.0) return null;
+          ok = await _runWithLook(plan, out, look);
+          if (ok) {
+            duration = plan.totalDuration;
+            break;
+          }
         }
-        if (!ok) ok = await _run(plan, out);
-        if (ok) {
-          duration = plan.totalDuration;
-          break;
-        }
+        if (ok) break;
       }
       if (!ok) return null;
 
@@ -455,8 +521,8 @@ class MotionCutawayRenderer {
         await MotionSceneJson.writeFor(
           out,
           MotionSceneDocument(
-            project: built.project,
-            assets: built.assets,
+            project: scene.project,
+            assets: scene.assets,
             fontFamily: fontFamily,
           ),
         );
