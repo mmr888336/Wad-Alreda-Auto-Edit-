@@ -3,6 +3,10 @@
 /// B-roll clip, so it is exported, saved and editable with the existing
 /// timeline tools. Any failure returns null and the export simply continues
 /// without the cutaway.
+///
+/// Next to every clip a `<clip>.motion.json` file is written with the scene
+/// layers, so the layers can be edited later (see MotionSceneEditorPage) and
+/// the clip re-rendered through [renderBuilt].
 library;
 
 import 'dart:io';
@@ -14,6 +18,7 @@ import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 
 import 'motion_ffmpeg_adapter.dart';
 import 'motion_graphics.dart' show MotionMood;
+import 'motion_scene_json.dart';
 import 'pixel_art_sprites.dart';
 import 'reference_scene_builder.dart';
 import 'text_render.dart';
@@ -120,6 +125,42 @@ class MotionCutawayRenderer {
         variant: index,
       );
 
+      final clip = await renderBuilt(
+        built: built,
+        dir: dir,
+        stamp: stamp,
+        index: index,
+        fontFamily: fontFamily,
+        temps: temps,
+      );
+      if (clip == null) return null;
+
+      return MotionCutawayClip(
+        path: clip.path,
+        duration: math.min(spec.duration, clip.duration),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Renders an already built (or edited) motion project to
+  /// `motion_scene_<stamp>_<index>.mp4` inside [dir], and writes its editable
+  /// description next to it. Temporary images and the description file are
+  /// added to [temps]; the MP4 itself is left to the caller. Returns null on
+  /// failure.
+  static Future<MotionCutawayClip?> renderBuilt({
+    required ReferenceSceneResult built,
+    required String dir,
+    required int stamp,
+    required int index,
+    required String fontFamily,
+    required List<String> temps,
+  }) async {
+    try {
+      final mw = built.project.width;
+      final mh = built.project.height;
+
       final assets = <String, MotionRenderAsset>{};
       final spritePaths = <String, String>{};
       final fontSize = math.min(mw, mh) * 0.14;
@@ -209,10 +250,22 @@ class MotionCutawayRenderer {
         } catch (_) {}
         return null;
       }
-      return MotionCutawayClip(
-        path: out,
-        duration: math.min(spec.duration, plan.totalDuration),
-      );
+
+      // The editable description is optional: the clip works without it.
+      try {
+        final sidecar = MotionSceneJson.sidecarPathFor(out);
+        await MotionSceneJson.writeFor(
+          out,
+          MotionSceneDocument(
+            project: built.project,
+            assets: built.assets,
+            fontFamily: fontFamily,
+          ),
+        );
+        temps.add(sidecar);
+      } catch (_) {}
+
+      return MotionCutawayClip(path: out, duration: plan.totalDuration);
     } catch (_) {
       return null;
     }

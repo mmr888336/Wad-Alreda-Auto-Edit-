@@ -150,6 +150,34 @@ class ProjectStore {
     return destination.path;
   }
 
+  /// `clip.mp4` -> `clip.motion.json`. This is the same naming used by
+  /// MotionSceneJson.sidecarPathFor for the editable description of a motion
+  /// cutaway clip.
+  String? _motionSidecarFor(String path) {
+    final dot = path.lastIndexOf('.');
+    final slash = path.lastIndexOf(RegExp(r'[/\\]'));
+    if (dot <= 0 || dot <= slash) return null;
+    return '${path.substring(0, dot)}.motion.json';
+  }
+
+  /// A motion cutaway clip has an editable description next to it. It travels
+  /// with the clip so the scene layers stay editable after the project is
+  /// saved. Clips without a description are copied as before.
+  Future<void> _copyMotionSidecar(
+    String sourcePath,
+    String destinationPath,
+  ) async {
+    try {
+      final from = _motionSidecarFor(sourcePath);
+      final to = _motionSidecarFor(destinationPath);
+      if (from == null || to == null) return;
+      if (!await File(from).exists()) return;
+      await _copyFile(sourcePath: from, destinationPath: to);
+    } catch (_) {
+      // The clip itself is saved; its layer-editing data is optional.
+    }
+  }
+
   TimelineProject _withStoredAssetPaths(
     TimelineProject project,
     Map<String, String> copiedPaths,
@@ -309,6 +337,7 @@ class ProjectStore {
           sourcePath: sourcePath,
           destinationPath: destination,
         );
+        await _copyMotionSidecar(sourcePath, destination);
         assetIndex++;
       }
 
