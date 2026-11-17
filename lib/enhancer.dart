@@ -9,6 +9,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'analyzer.dart';
 import 'broll.dart';
+import 'dense_cutaway_planner.dart';
 import 'settings.dart';
 import 'editing_engine.dart';
 import 'keyword_callout_planner.dart';
@@ -91,6 +92,10 @@ class Enhancer {
 
   /// Longest the whole B-roll download + safety check may take.
   static const Duration _brollBudget = Duration(minutes: 4);
+
+  /// Longest the whole motion-scene building may take. A video now gets many
+  /// scenes, so after this the export continues with the ones already built.
+  static const Duration _motionBudget = Duration(minutes: 6);
 
   static String _f(double v) => v.toStringAsFixed(2);
 
@@ -820,31 +825,60 @@ class Enhancer {
     // Motion Smith cutaways: pixel-art scenes built from the meaning of the
     // speech (background, sprite, independent animated words, transitions),
     // rendered by the Motion engine and placed like B-roll clips.
+    //
+    // The dense planner looks at the WHOLE video and places a scene in every
+    // stretch of speech that has a meaning worth showing (see
+    // DenseCutawayPlanner); the old sparse planner (1 to 3 scenes) is only the
+    // fallback if the dense one finds nothing.
     if (s.visualEffects &&
         analysis != null &&
         caps.isNotEmpty &&
         MotionCutawayRenderer.enabled &&
         ReferenceSceneBuilder.enabled) {
       try {
-        final maxCutaways = switch (motionPlan.mood) {
-          MotionMood.calm => 1,
-          MotionMood.cinematic => 2,
-          MotionMood.dynamic => 3,
-        };
-        final specs = ReferenceSceneBuilder.planCutaways(
-          captions: <CalloutSource>[
-            for (final caption in caps)
-              CalloutSource(start: caption.start, end: caption.end, text: caption.text),
-          ],
-          duration: cutSec,
-          maxCount: maxCutaways,
-          avoid: <List<double>>[
-            for (final item in brolls) <double>[item.start, item.end],
-          ],
-        );
+        final captionSources = <CalloutSource>[
+          for (final caption in caps)
+            CalloutSource(start: caption.start, end: caption.end, text: caption.text),
+        ];
+        final avoidRanges = <List<double>>[
+          for (final item in brolls) <double>[item.start, item.end],
+        ];
+
+        final dense = DenseCutawayPlanner.enabled
+            ? DenseCutawayPlanner.plan(
+                captions: captionSources,
+                duration: cutSec,
+                mood: motionPlan.mood,
+                avoid: avoidRanges,
+              )
+            : const <CutawaySpec>[];
+
+        final List<CutawaySpec> specs;
+        if (dense.isNotEmpty) {
+          specs = dense;
+        } else {
+          final maxCutaways = switch (motionPlan.mood) {
+            MotionMood.calm => 1,
+            MotionMood.cinematic => 2,
+            MotionMood.dynamic => 3,
+          };
+          specs = ReferenceSceneBuilder.planCutaways(
+            captions: captionSources,
+            duration: cutSec,
+            maxCount: maxCutaways,
+            avoid: avoidRanges,
+          );
+        }
+
+        final motionDeadline = DateTime.now().add(_motionBudget);
         var made = 0;
         for (var i = 0; i < specs.length; i++) {
           _checkCancel();
+          if (DateTime.now().isAfter(motionDeadline)) {
+            notes.add('استغرق بناء مشاهد الموشن وقتاً طويلاً؛ تم الاكتفاء بما تم تجهيزه.');
+            break;
+          }
+          report(0.36 + 0.01 * i / specs.length);
           onStatus?.call('جاري بناء مشهد موشن (${i + 1}/${specs.length})...');
           final clip = await MotionCutawayRenderer.render(
             spec: specs[i],
@@ -864,7 +898,7 @@ class Enhancer {
         }
         if (made > 0) {
           brolls.sort((a, b) => a.start.compareTo(b.start));
-          notes.add('تم إضافة $made مشهد موشن (Pixel Art) مبني من معنى الكلام عبر محرك Motion الجديد.');
+          notes.add('تم إضافة $made مشهد موشن (Pixel Art) موزعة على الفيديو كله ومبنية من معنى الكلام عبر محرك Motion الجديد.');
         } else if (specs.isNotEmpty) {
           notes.add('تعذر تجهيز مشاهد الموشن؛ استمر التصدير بدونها.');
         }
