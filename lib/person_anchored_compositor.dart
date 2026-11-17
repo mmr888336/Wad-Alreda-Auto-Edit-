@@ -7,6 +7,7 @@ import 'filament_scene_exporter.dart';
 import 'person_anchor_path.dart';
 import 'person_anchored_command.dart';
 import 'person_matte_renderer.dart';
+import 'person_segmentation_matte.dart';
 import 'person_silhouette.dart';
 import 'person_tracking_models.dart';
 import 'scene_key_color.dart';
@@ -28,8 +29,12 @@ class PersonAnchoredResult {
 
 /// Phase 2: places rendered 3D scenes around the tracked person instead of a
 /// fixed panel. The card follows the person, the background of the 3D render
-/// is keyed out, and for "behind" placements an approximate body matte of the
-/// person is drawn over the card so it looks like it stands behind them.
+/// is keyed out, and for "behind" placements a per-frame person matte is drawn
+/// over the card so it looks like it stands behind them.
+///
+/// The matte comes from ML Kit Selfie Segmentation (an accurate mask of the
+/// person for every sampled frame). When segmentation is not possible the
+/// approximate pose-based matte is used instead.
 ///
 /// A scene whose person path cannot be planned keeps the old panel.
 class PersonAnchoredCompositor {
@@ -135,9 +140,12 @@ class PersonAnchoredCompositor {
 
         PersonMatteSequence? matte;
         if (path.placement.occludedByPerson && track != null) {
+          onStatus?.call('جاري قص الشخص بدقة للمشهد ${i + 1}...');
+
+          // 1) Accurate matte: real segmentation of every sampled frame.
           try {
-            matte = await PersonMatteRenderer.render(
-              track: track,
+            matte = await PersonSegmentationMatte.render(
+              videoPath: videoPath,
               start: scene.start,
               end: scene.end,
               directory: '${workDir.path}/matte_$i',
@@ -146,6 +154,28 @@ class PersonAnchoredCompositor {
             );
           } catch (_) {
             matte = null;
+          }
+
+          // 2) Fallback: approximate matte drawn from the pose landmarks.
+          if (matte == null) {
+            try {
+              matte = await PersonMatteRenderer.render(
+                track: track,
+                start: scene.start,
+                end: scene.end,
+                directory: '${workDir.path}/matte_$i',
+                frameWidth: width,
+                frameHeight: height,
+              );
+            } catch (_) {
+              matte = null;
+            }
+
+            if (matte != null) {
+              notes.add(
+                'تعذر القص الدقيق للمشهد ${i + 1}؛ استُخدم قناع تقريبي للشخص.',
+              );
+            }
           }
 
           if (matte == null) {

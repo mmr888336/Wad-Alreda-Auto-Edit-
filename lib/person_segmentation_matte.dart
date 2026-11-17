@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -124,8 +123,8 @@ class PersonSegmentationMatte {
       var failures = 0;
 
       for (var i = 0; i < count; i++) {
-        final name = (i + 1).toString().padLeft(5, '0');
-        final frameFile = File('${source.path}/src_$name.jpg');
+        final sourceName = (i + 1).toString().padLeft(5, '0');
+        final frameFile = File('${source.path}/src_$sourceName.jpg');
         if (!await frameFile.exists()) break;
 
         Uint8List? current;
@@ -146,9 +145,7 @@ class PersonSegmentationMatte {
               maskH = h;
             }
 
-            if (w == maskW &&
-                h == maskH &&
-                confidences.length >= w * h) {
+            if (w == maskW && h == maskH && confidences.length >= w * h) {
               final bytes = Uint8List(w * h);
               var personPixels = 0;
               for (var p = 0; p < bytes.length; p++) {
@@ -161,10 +158,15 @@ class PersonSegmentationMatte {
 
               if (!hasPerson) {
                 bytes.fillRange(0, bytes.length, 0);
-              } else if (previous != null && previousHadPerson) {
-                // Light temporal smoothing removes edge flicker between frames.
-                for (var p = 0; p < bytes.length; p++) {
-                  bytes[p] = ((bytes[p] * 7 + previous[p] * 3) / 10).round();
+              } else {
+                final before = previous;
+                if (before != null &&
+                    previousHadPerson &&
+                    before.length == bytes.length) {
+                  // Light temporal smoothing removes edge flicker.
+                  for (var p = 0; p < bytes.length; p++) {
+                    bytes[p] = ((bytes[p] * 7 + before[p] * 3) / 10).round();
+                  }
                 }
               }
 
@@ -175,25 +177,28 @@ class PersonSegmentationMatte {
           current = null;
         }
 
-        if (current == null) {
+        final held = previous;
+        final Uint8List frameBytes;
+        if (current != null) {
+          frameBytes = current;
+          failures = 0;
+        } else {
           failures++;
           // Without any earlier mask there is nothing to hold: give up so the
           // caller can use the approximate matte instead.
-          if (previous == null || failures >= 3) return null;
-          current = previous;
+          if (held == null || failures >= 3) return null;
+          frameBytes = held;
           hasPerson = previousHadPerson;
-        } else {
-          failures = 0;
         }
 
         if (hasPerson) detected++;
 
-        await File('$directory/matte_$name.png'.replaceFirst(
-          'matte_$name',
-          'matte_${i.toString().padLeft(5, '0')}',
-        )).writeAsBytes(encodeGrayPng(current, maskW, maskH));
+        final outName = i.toString().padLeft(5, '0');
+        await File('$directory/matte_$outName.png').writeAsBytes(
+          encodeGrayPng(frameBytes, maskW, maskH),
+        );
 
-        previous = current;
+        previous = frameBytes;
         previousHadPerson = hasPerson;
         written++;
 
@@ -202,15 +207,16 @@ class PersonSegmentationMatte {
         } catch (_) {}
       }
 
-      if (written == 0 || detected == 0 || previous == null) return null;
+      final last = previous;
+      if (written == 0 || detected == 0 || last == null) return null;
 
       // The extractor can return a frame fewer than planned: hold the last
       // mask so the sequence always covers the whole scene window.
-      final last = previous;
       for (var i = written; i < count; i++) {
-        await File(
-          '$directory/matte_${i.toString().padLeft(5, '0')}.png',
-        ).writeAsBytes(encodeGrayPng(last, maskW, maskH));
+        final outName = i.toString().padLeft(5, '0');
+        await File('$directory/matte_$outName.png').writeAsBytes(
+          encodeGrayPng(last, maskW, maskH),
+        );
       }
 
       return PersonMatteSequence(
@@ -232,7 +238,8 @@ class PersonSegmentationMatte {
   /// edges are firm but not jagged.
   static int _toByte(double confidence) {
     if (confidence.isNaN) return 0;
-    final t = ((confidence - _low) / (_high - _low)).clamp(0.0, 1.0).toDouble();
+    final t =
+        ((confidence - _low) / (_high - _low)).clamp(0.0, 1.0).toDouble();
     final s = t * t * (3 - 2 * t);
     return (s * 255).round().clamp(0, 255).toInt();
   }
