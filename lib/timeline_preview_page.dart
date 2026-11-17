@@ -6,21 +6,44 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
 import 'app_localizations.dart';
+import 'motion_reexport.dart';
+import 'motion_scene_edit_flow.dart';
+import 'motion_scene_editor_page.dart' show MotionSceneEditResult;
+import 'motion_scene_json.dart';
+import 'motion_timeline_integration.dart';
 import 'timeline_engine.dart';
 import 'timeline_page.dart';
 
-/// Phase 3D-1: real video playback linked to a lightweight timeline overview.
+/// Called after an edited motion scene was put back into the video.
 ///
-/// This is a review/preview surface. It does not alter media or re-render the
-/// project. Detailed layer and keyframe inspection remains in TimelinePage.
+/// [videoPath] is the new full video and [project] the updated timeline.
+/// Return true when the host stored its own copy of the video (for example in
+/// the project library), so this page may delete its working copy when it is
+/// closed. Return false when the host keeps using [videoPath] itself.
+typedef TimelineEditedCallback = Future<bool> Function(
+  String videoPath,
+  TimelineProject project,
+);
+
+/// Real video playback linked to a lightweight timeline overview.
+///
+/// Motion cutaways that have an editable description get an "Edit scene"
+/// button. It opens the motion scene editor, and after the user applies their
+/// edits the re-rendered scene is drawn over the same time window of the video,
+/// the player reloads the new video and the timeline layer is updated.
+/// Detailed layer and keyframe inspection remains in TimelinePage.
 class TimelinePreviewPage extends StatefulWidget {
   final TimelineProject project;
   final String? videoPath;
+
+  /// Notified after every successful scene edit. Optional.
+  final TimelineEditedCallback? onEdited;
 
   const TimelinePreviewPage({
     super.key,
     required this.project,
     this.videoPath,
+    this.onEdited,
   });
 
   @override
@@ -40,11 +63,26 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
   double _playhead = 0;
   DateTime _lastUiTick = DateTime.fromMillisecondsSinceEpoch(0);
 
+  /// The timeline and video shown here. They start as the widget's own and
+  /// change after every applied scene edit.
+  late TimelineProject _project;
+  String? _videoPath;
+
+  List<TimelineLayer> _editable = const <TimelineLayer>[];
+  bool _exporting = false;
+  double _exportProgress = 0;
+
+  /// Videos this page created (never the one it was opened with).
+  final Set<String> _ownedVideos = <String>{};
+  bool _hostKeepsCopy = false;
+
   bool get _rtl => AppLocalizations.isRtl;
-  double get _duration => math.max(0.1, widget.project.duration).toDouble();
+  double get _duration => math.max(0.1, _project.duration).toDouble();
+
+  String _s(String ar, String en) => _rtl ? ar : en;
 
   List<TimelineTrack> get _tracks {
-    final items = widget.project.tracks.toList()
+    final items = _project.tracks.toList()
       ..sort((a, b) => a.order.compareTo(b.order));
     return items;
   }
@@ -52,11 +90,14 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
   @override
   void initState() {
     super.initState();
+    _project = widget.project;
+    _videoPath = widget.videoPath;
+    _editable = MotionSceneEditFlow.editableClips(_project);
     _initializePlayer();
   }
 
   Future<void> _initializePlayer() async {
-    final path = widget.videoPath?.trim();
+    final path = _videoPath?.trim();
     if (path == null || path.isEmpty) return;
 
     try {
@@ -85,6 +126,26 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
     }
   }
 
+  /// Drops the current player and opens [_videoPath] again, then seeks to
+  /// [resumeAt]. Used after the video file changed.
+  Future<void> _reloadPlayer({required double resumeAt}) async {
+    final old = _controller;
+    old?.removeListener(_onPlayerTick);
+    if (mounted) {
+      setState(() {
+        _controller = null;
+        _playerReady = false;
+        _playerError = null;
+      });
+    }
+    try {
+      await old?.dispose();
+    } catch (_) {}
+    if (!mounted) return;
+    await _initializePlayer();
+    if (mounted) await _seek(resumeAt);
+  }
+
   void _onPlayerTick() {
     final controller = _controller;
     if (!mounted || controller == null || !controller.value.isInitialized) {
@@ -111,6 +172,14 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
   void dispose() {
     _controller?.removeListener(_onPlayerTick);
     _controller?.dispose();
+
+    // The host stored its own copy, so this page's working video is garbage.
+    final path = _videoPath;
+    if (_hostKeepsCopy && path != null && _ownedVideos.contains(path)) {
+      try {
+        File(path).deleteSync();
+      } catch (_) {}
+    }
     super.dispose();
   }
 
@@ -160,106 +229,362 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
     return '$minutes:${seconds.toStringAsFixed(1).padLeft(4, '0')}';
   }
 
+  void _notify(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Motion scene editing
+  // ---------------------------------------------------------------------------
+
+  /// Opens the editor for [layer]'s motion scene, and puts the result back.
+  Future<void> _editMotionScene(TimelineLayer layer) async {
+    if (_exporting) return;
+
+    final videoPath = _videoPath?.trim();
+    final clipPath = layer.sourcePath;
+    if (videoPath == null ||
+        videoPath.isEmpty ||
+        clipPath == null ||
+        !File(videoPath).existsSync()) {
+      _notify(_s(
+        'ملف الفيديو غير متاح للتعديل.',
+        'The video file is not available for editing.',
+      ));
+      return;
+    }
+
+    // Show the scene in the original video first, then pause.
+    await _seek(layer.start);
+    final controller = _controller;
+    if (controller != null &&
+        controller.value.isInitialized &&
+        controller.value.isPlaying) {
+      await controller.pause();
+    }
+
+    final document = await MotionSceneJson.readFor(clipPath);
+    if (!mounted) return;
+    if (document == null) {
+      _notify(_s(
+        'وصف المشهد غير موجود؛ المشهد ده ما بينفع يتعدّل.',
+        'This scene has no editable description.',
+      ));
+      return;
+    }
+
+    final edited = await MotionSceneEditFlow.openEditor(
+      context,
+      document: document,
+      clipPath: clipPath,
+    );
+    if (edited == null || !mounted) return;
+
+    await _applyEditedClip(layer, edited);
+  }
+
+  /// Draws the re-rendered scene over its time window in the video, then
+  /// updates the player and the timeline.
+  Future<void> _applyEditedClip(
+    TimelineLayer layer,
+    MotionSceneEditResult edited,
+  ) async {
+    final videoPath = _videoPath;
+    if (videoPath == null) return;
+
+    final window = MotionTimelineIntegration.overlayWindow(
+      layer,
+      edited.duration,
+    );
+    TimelineProject nextProject;
+    try {
+      nextProject = MotionTimelineIntegration.applyEditedClip(
+        project: _project,
+        layerId: layer.id,
+        clipPath: edited.clipPath,
+        clipDuration: edited.duration,
+      );
+    } catch (_) {
+      _notify(_s(
+        'تعذّر تحديث التايم لاين بالمشهد المعدّل.',
+        'Could not update the timeline with the edited scene.',
+      ));
+      return;
+    }
+    if (window == null) return;
+
+    setState(() {
+      _exporting = true;
+      _exportProgress = 0;
+    });
+
+    String? out;
+    try {
+      out = await MotionReexport.overlayClip(
+        videoPath: videoPath,
+        clipPath: edited.clipPath,
+        start: window.start,
+        end: window.end,
+        videoDuration: _duration,
+        onProgress: (value) {
+          if (!mounted || value.isNaN) return;
+          setState(() => _exportProgress = value.clamp(0.0, 1.0).toDouble());
+        },
+      );
+    } catch (_) {
+      out = null;
+    }
+    if (!mounted) return;
+
+    if (out == null) {
+      setState(() => _exporting = false);
+      _notify(_s(
+        'تعذّر إرجاع المشهد المعدّل إلى الفيديو. الفيديو ما اتغيّر.',
+        'Could not put the edited scene back. The video is unchanged.',
+      ));
+      return;
+    }
+
+    final newVideo = out;
+    setState(() {
+      _project = nextProject;
+      _videoPath = newVideo;
+      _editable = MotionSceneEditFlow.editableClips(nextProject);
+      _exporting = false;
+    });
+    _ownedVideos.add(newVideo);
+
+    await _reloadPlayer(resumeAt: window.start);
+
+    // The previous working video is superseded. The one this page was opened
+    // with is never in this set, so it is never deleted here.
+    if (_ownedVideos.remove(videoPath)) {
+      try {
+        final old = File(videoPath);
+        if (await old.exists()) await old.delete();
+      } catch (_) {}
+    }
+
+    try {
+      _hostKeepsCopy = await widget.onEdited?.call(newVideo, nextProject) ?? false;
+    } catch (_) {
+      _hostKeepsCopy = false;
+    }
+
+    _notify(_s(
+      'تم تحديث الفيديو والتايم لاين بالمشهد المعدّل.',
+      'Video and timeline updated with the edited scene.',
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     final canvasWidth = _labelWidth + _duration * _pixelsPerSecond + 24;
     final canvasHeight = _rulerHeight + _tracks.length * _rowHeight;
     final controller = _controller;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_rtl ? 'معاينة الاستوديو' : 'Studio Preview'),
-        actions: [
-          IconButton(
-            tooltip: _rtl ? 'تفاصيل الطبقات' : 'Layer details',
-            onPressed: _openDetailedTimeline,
-            icon: const Icon(Icons.timeline_rounded),
-          ),
-          const SizedBox(width: 6),
-        ],
-      ),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 24),
-          children: [
-            _sectionTitle(
-              _rtl ? 'معاينة الفيديو' : 'VIDEO PREVIEW',
-              Icons.play_circle_outline_rounded,
+    return PopScope(
+      canPop: !_exporting,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(_rtl ? 'معاينة الاستوديو' : 'Studio Preview'),
+          actions: [
+            IconButton(
+              tooltip: _rtl ? 'تفاصيل الطبقات' : 'Layer details',
+              onPressed: _openDetailedTimeline,
+              icon: const Icon(Icons.timeline_rounded),
             ),
-            const SizedBox(height: 9),
-            _videoSurface(controller),
-            const SizedBox(height: 10),
-            _playerControls(controller),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: _sectionTitle(
-                    _rtl ? 'طبقات المشروع' : 'PROJECT TIMELINE',
-                    Icons.layers_outlined,
-                  ),
-                ),
-                Text(
-                  '${widget.project.width}×${widget.project.height}',
-                  style: const TextStyle(
-                    color: Colors.white54,
-                    fontSize: 10,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 9),
-            Container(
-              height: canvasHeight,
-              decoration: BoxDecoration(
-                color: const Color(0xFF11121B),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: const Color(0xFF292A39)),
+            const SizedBox(width: 6),
+          ],
+        ),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 24),
+            children: [
+              _sectionTitle(
+                _rtl ? 'معاينة الفيديو' : 'VIDEO PREVIEW',
+                Icons.play_circle_outline_rounded,
               ),
-              clipBehavior: Clip.antiAlias,
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTapDown: (details) => _onTimelineTap(details.localPosition),
-                  child: CustomPaint(
-                    size: Size(canvasWidth, canvasHeight),
-                    painter: _PreviewTimelinePainter(
-                      tracks: _tracks,
-                      duration: _duration,
-                      playhead: _playhead,
-                      pixelsPerSecond: _pixelsPerSecond,
-                      labelWidth: _labelWidth,
-                      rulerHeight: _rulerHeight,
-                      rowHeight: _rowHeight,
-                      rtl: _rtl,
+              const SizedBox(height: 9),
+              _videoSurface(controller),
+              const SizedBox(height: 10),
+              _playerControls(controller),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: _sectionTitle(
+                      _rtl ? 'طبقات المشروع' : 'PROJECT TIMELINE',
+                      Icons.layers_outlined,
+                    ),
+                  ),
+                  Text(
+                    '${_project.width}×${_project.height}',
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 10,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 9),
+              Container(
+                height: canvasHeight,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF11121B),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFF292A39)),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapDown: (details) =>
+                        _onTimelineTap(details.localPosition),
+                    child: CustomPaint(
+                      size: Size(canvasWidth, canvasHeight),
+                      painter: _PreviewTimelinePainter(
+                        tracks: _tracks,
+                        duration: _duration,
+                        playhead: _playhead,
+                        pixelsPerSecond: _pixelsPerSecond,
+                        labelWidth: _labelWidth,
+                        rulerHeight: _rulerHeight,
+                        rowHeight: _rowHeight,
+                        rtl: _rtl,
+                      ),
                     ),
                   ),
                 ),
               ),
+              const SizedBox(height: 8),
+              Text(
+                _rtl
+                    ? 'اضغط على أي مكان في التايم لاين لتحريك الفيديو لنفس اللحظة.'
+                    : 'Tap anywhere on the timeline to seek the video to that moment.',
+                style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 11,
+                  height: 1.45,
+                ),
+              ),
+              if (_editable.isNotEmpty || _exporting) ...[
+                const SizedBox(height: 14),
+                _motionEditSection(),
+              ],
+              const SizedBox(height: 14),
+              FilledButton.icon(
+                onPressed: _openDetailedTimeline,
+                icon: const Icon(Icons.tune_rounded),
+                label: Text(
+                  _rtl
+                      ? 'فتح تفاصيل الطبقات والحركات'
+                      : 'Open layer and motion details',
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _motionEditSection() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF171721),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF51417B)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionTitle(
+            _rtl ? 'مشاهد الموشن القابلة للتعديل' : 'EDITABLE MOTION SCENES',
+            Icons.auto_fix_high_rounded,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _rtl
+                ? 'افتح محرر المشهد وعدّل طبقاته. بعد التطبيق بنرجّع المشهد المعدّل مكانه في الفيديو والتايم لاين.'
+                : 'Open the scene editor and change its layers. After you apply, the edited scene replaces the old one in the video and the timeline.',
+            style: const TextStyle(
+              color: Colors.white54,
+              fontSize: 11,
+              height: 1.45,
             ),
-            const SizedBox(height: 8),
+          ),
+          for (final layer in _editable) _motionTile(layer),
+          if (_exporting) ...[
+            const SizedBox(height: 12),
+            LinearProgressIndicator(
+              value: _exportProgress > 0 ? _exportProgress : null,
+              minHeight: 4,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            const SizedBox(height: 6),
             Text(
               _rtl
-                  ? 'اضغط على أي مكان في التايم لاين لتحريك الفيديو لنفس اللحظة.'
-                  : 'Tap anywhere on the timeline to seek the video to that moment.',
-              style: const TextStyle(
-                color: Colors.white54,
-                fontSize: 11,
-                height: 1.45,
-              ),
-            ),
-            const SizedBox(height: 14),
-            FilledButton.icon(
-              onPressed: _openDetailedTimeline,
-              icon: const Icon(Icons.tune_rounded),
-              label: Text(
-                _rtl ? 'فتح تفاصيل الطبقات والحركات' : 'Open layer and motion details',
-              ),
+                  ? 'جاري إرجاع المشهد المعدّل إلى الفيديو...'
+                  : 'Putting the edited scene back into the video...',
+              style: const TextStyle(color: Colors.white70, fontSize: 11),
             ),
           ],
-        ),
+        ],
+      ),
+    );
+  }
+
+  Widget _motionTile(TimelineLayer layer) {
+    final range = '${_time(layer.start)} → ${_time(layer.end)}';
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: InkWell(
+              onTap: _exporting ? null : () => _seek(layer.start),
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      layer.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      range,
+                      style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.tonalIcon(
+            onPressed: _exporting ? null : () => _editMotionScene(layer),
+            icon: const Icon(Icons.edit_rounded, size: 18),
+            label: Text(_s('تعديل المشهد', 'Edit scene')),
+          ),
+        ],
       ),
     );
   }
@@ -269,13 +594,15 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
       children: [
         Icon(icon, size: 18, color: const Color(0xFFC2B5FF)),
         const SizedBox(width: 7),
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 12,
-            letterSpacing: 0.45,
-            fontWeight: FontWeight.w800,
-            color: Colors.white70,
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 12,
+              letterSpacing: 0.45,
+              fontWeight: FontWeight.w800,
+              color: Colors.white70,
+            ),
           ),
         ),
       ],
@@ -304,9 +631,10 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
       );
     }
 
+    final path = _videoPath;
     final message = _playerError != null
         ? (_rtl ? 'تعذر فتح الفيديو للمعاينة' : 'Could not open video preview')
-        : widget.videoPath == null || widget.videoPath!.trim().isEmpty
+        : path == null || path.trim().isEmpty
             ? (_rtl ? 'مسار الفيديو غير متوفر' : 'Video path is not available')
             : (_rtl ? 'جاري تجهيز معاينة الفيديو...' : 'Preparing video preview...');
 
@@ -346,7 +674,7 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
               ),
             ),
           ],
-          if (widget.videoPath != null && !_playerReady && _playerError == null)
+          if (path != null && !_playerReady && _playerError == null)
             const Padding(
               padding: EdgeInsets.only(top: 12),
               child: SizedBox(
@@ -361,7 +689,8 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
   }
 
   Widget _playerControls(VideoPlayerController? controller) {
-    final ready = controller != null && _playerReady && controller.value.isInitialized;
+    final ready =
+        controller != null && _playerReady && controller.value.isInitialized;
     final playing = ready && controller.value.isPlaying;
     return Container(
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 2),
@@ -375,7 +704,9 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
             children: [
               IconButton.filledTonal(
                 onPressed: ready ? _togglePlayback : null,
-                icon: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                icon: Icon(
+                  playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                ),
                 tooltip: playing
                     ? (_rtl ? 'إيقاف مؤقت' : 'Pause')
                     : (_rtl ? 'تشغيل' : 'Play'),
@@ -393,7 +724,9 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
               const Spacer(),
               if (ready)
                 Icon(
-                  playing ? Icons.graphic_eq_rounded : Icons.pause_circle_outline,
+                  playing
+                      ? Icons.graphic_eq_rounded
+                      : Icons.pause_circle_outline,
                   color: Colors.white54,
                   size: 18,
                 ),
@@ -403,7 +736,8 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
             value: _playhead.clamp(0.0, _duration).toDouble(),
             min: 0,
             max: _duration,
-            onChangeStart: ready ? (_) => setState(() => _dragging = true) : null,
+            onChangeStart:
+                ready ? (_) => setState(() => _dragging = true) : null,
             onChanged: ready
                 ? (value) => setState(() => _playhead = value)
                 : null,
@@ -422,7 +756,7 @@ class _TimelinePreviewPageState extends State<TimelinePreviewPage> {
   void _openDetailedTimeline() {
     Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder: (_) => TimelinePage(project: widget.project),
+        builder: (_) => TimelinePage(project: _project),
       ),
     );
   }
@@ -569,7 +903,9 @@ class _PreviewTimelinePainter extends CustomPainter {
         if (rect.width > 38) {
           _drawText(
             canvas,
-            layer.text?.trim().isNotEmpty == true ? layer.text!.trim() : layer.name,
+            layer.text?.trim().isNotEmpty == true
+                ? layer.text!.trim()
+                : layer.name,
             Offset(rect.left + 5, rect.top + 5),
             rect.width - 10,
             color: Colors.white,
@@ -588,7 +924,11 @@ class _PreviewTimelinePainter extends CustomPainter {
       Offset(playX, size.height),
       playPaint,
     );
-    canvas.drawCircle(Offset(playX, 5), 4, Paint()..color = const Color(0xFFFFC857));
+    canvas.drawCircle(
+      Offset(playX, 5),
+      4,
+      Paint()..color = const Color(0xFFFFC857),
+    );
   }
 
   @override
