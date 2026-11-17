@@ -134,9 +134,13 @@ class FilamentSceneExporter {
 
   /// Composites each 3D scene at its actual timeline start and end.
   ///
-  /// The 3D scene is presented as a picture-in-picture panel. This preserves
-  /// the captions, title graphics, B-roll and original audio already rendered
-  /// by Enhancer.
+  /// Cinematic motion-graphics look: the dark studio background of the 3D
+  /// capture is crushed to pure black and the scene is blended over the whole
+  /// frame in "screen" mode. Black becomes fully transparent, so only the
+  /// lit model remains, floating over the footage with soft vignetted edges
+  /// and a short fade in / fade out. There is no window, no border and no
+  /// picture-in-picture card. The captions, title graphics, B-roll and
+  /// original audio rendered by Enhancer are preserved.
   static Future<String> compositeScenesOverVideo({
     required String videoPath,
     required List<ThreeDSceneClip> scenes,
@@ -176,22 +180,11 @@ class FilamentSceneExporter {
       );
     }
 
-    final shortEdge = math.min(info.w, info.h);
-
-    final cardSide = _even(
-      (shortEdge * 0.46)
-          .round()
-          .clamp(120, 720)
-          .toInt(),
+    // The captured scene is square. It is scaled to the video's short edge
+    // and centered; its vignetted edges fade to black (= transparent).
+    final sceneSide = _even(
+      math.min(info.w, info.h),
     );
-
-    final margin = math.max(
-      8,
-      (info.w * 0.035).round(),
-    );
-
-    final positionX = 'main_w-overlay_w-$margin';
-    const positionY = '(main_h-overlay_h)/2';
 
     final validScenes = <ThreeDSceneClip>[];
 
@@ -243,8 +236,11 @@ class FilamentSceneExporter {
       '-i "$videoPath"',
     ];
 
+    // The whole blend chain runs in planar RGB so that "screen" mixes colors
+    // correctly (blending in YUV would shift the chroma).
     final chains = <String>[
-      '[0:v]scale=${info.w}:${info.h}:flags=lanczos,setsar=1[base0]',
+      '[0:v]scale=${info.w}:${info.h}:flags=lanczos,'
+          'setsar=1,format=gbrp[base0]',
     ];
 
     var current = 'base0';
@@ -263,32 +259,45 @@ class FilamentSceneExporter {
       final start = _f(scene.start);
       final end = _f(scene.end);
 
+      final clipDuration = scene.end - scene.start;
+
+      // Soft entrance and exit, never longer than a third of the clip.
+      final fade = math.min(0.4, clipDuration / 3).toDouble();
+      final fadeOutStart = math.max(0.0, clipDuration - fade);
+
+      // 1. Fit the square capture to the short edge of the video.
+      // 2. Soft vignette so the square edges melt into black.
+      // 3. Planar RGB, then crush the studio background to pure black.
+      // 4. Fade in and out (to black = transparent).
+      // 5. Delay the clip to its timeline start with black frames.
+      // 6. Center it on a full-size black frame, ready for "screen".
       chains.add(
         '[$inputIndex:v]'
-        'setpts=PTS-STARTPTS+$start/TB,'
-        'scale=$cardSide:$cardSide:'
-        'force_original_aspect_ratio=decrease:flags=lanczos,'
-        'pad=$cardSide:$cardSide:'
-        '(ow-iw)/2:(oh-ih)/2:color=0x101521,'
+        'scale=$sceneSide:$sceneSide:flags=lanczos,'
         'setsar=1,'
-        'drawbox=x=0:y=0:w=iw:h=ih:'
-        'color=0xB69AFF@0.95:t=3'
+        'format=yuv420p,'
+        'vignette=PI/5,'
+        'format=gbrp,'
+        "curves=all='0/0 0.14/0 1/1',"
+        'fade=t=in:st=0:d=${_f(fade)},'
+        'fade=t=out:st=${_f(fadeOutStart)}:d=${_f(fade)},'
+        'tpad=start_mode=add:start_duration=$start:color=black,'
+        'pad=${info.w}:${info.h}:(ow-iw)/2:(oh-ih)/2:color=black,'
+        'setsar=1'
         '[$sceneLabel]',
       );
 
       chains.add(
         '[$current][$sceneLabel]'
-        'overlay='
-        'x=$positionX:'
-        'y=$positionY:'
-        'eof_action=pass:'
-        'repeatlast=0:'
+        'blend=all_mode=screen:all_opacity=1:'
         "enable='between(t,$start,$end)'"
         '[$outputLabel]',
       );
 
       current = outputLabel;
     }
+
+    chains.add('[$current]format=yuv420p[three_d_out]');
 
     // The video was already encoded at high quality by the editor, so this
     // second pass uses a lighter preset: far less memory and time on a phone.
@@ -299,7 +308,7 @@ class FilamentSceneExporter {
     final command =
         '-y ${inputs.join(' ')} '
         '-filter_complex "${chains.join(';')}" '
-        '-map "[$current]" '
+        '-map "[three_d_out]" '
         '-map "0:a?" '
         '$videoEncoder '
         '-pix_fmt yuv420p '
