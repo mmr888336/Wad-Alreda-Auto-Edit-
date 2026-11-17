@@ -2,9 +2,12 @@
 /// FFmpegKit build before enabling it globally on mobile exports.
 ///
 /// Some recipes (bloom, halation) split the picture into two streams, so they
-/// carry their own pad labels and can only be used as a stand-alone `-vf`
-/// graph. [CinematicVfx.safeChain] returns only the single-stream recipes,
-/// which can be appended to an existing filter_complex output.
+/// need their own pad labels and cannot be appended to an existing filter
+/// chain as plain text. Use [CinematicVfx.buildGraph] to get a complete,
+/// correctly labelled filter_complex fragment that includes them (it works
+/// in RGB, so the glow is blended in the right colour space). The
+/// single-stream recipes alone are still available through
+/// [CinematicVfx.safeChain], which is the fallback when a graph fails.
 library;
 enum CinematicEffect { bloomGlow, volumetricLight, smokeSoftness, particlesDetail, softShadow, motionBlur, vignette, filmGrain, chromaticAberration, sharpen, warmGrade, coolGrade, depthOfField, cinemaBars, bleachBypass, halation }
 class CinematicVfxPreset {
@@ -57,4 +60,69 @@ class CinematicVfx {
   /// Only the single-stream recipes, ready to be joined with commas and
   /// appended to the output pad of an existing filter_complex.
   static List<String> safeChain(Iterable<CinematicEffect> effects,{double intensity=.4})=>[for(final e in effects)if(isSingleStream(e))filterFor(e,intensity:intensity)];
+
+  /// Complete filter_complex fragment that grades the stream on pad [input]
+  /// with [effects] (in order) and leaves the result on pad [output], or null
+  /// when [effects] is empty.
+  ///
+  /// Unlike [safeChain] this includes bloom and halation: each of them gets
+  /// its own uniquely labelled split / blur / blend block, built in RGB
+  /// (gbrp) so the screen blend adds light instead of shifting the chroma
+  /// planes, and converted back to yuv420p afterwards. Consecutive
+  /// single-stream effects are merged into one chain. Pads created inside
+  /// the fragment start with [prefix], so use another prefix if you place
+  /// two fragments in the same graph.
+  static String? buildGraph({required String input,required String output,required Iterable<CinematicEffect> effects,double intensity=.4,String prefix='fx'}) {
+    final v=intensity.clamp(0.0,1.0).toDouble();
+    final stages=<String Function(String,String,String)>[];
+    final pending=<String>[];
+    void flush(){
+      if(pending.isEmpty)return;
+      final body=pending.join(',');
+      pending.clear();
+      stages.add((a,b,c)=>'[$a]$body[$b]');
+    }
+    for(final e in effects){
+      if(isSingleStream(e)){
+        pending.add(filterFor(e,intensity:v));
+      } else {
+        flush();
+        stages.add(_splitStage(e,v));
+      }
+    }
+    flush();
+    if(stages.isEmpty)return null;
+    final parts=<String>[];
+    for(var n=0;n<stages.length;n++){
+      final from=n==0?input:'${prefix}_$n';
+      final to=n==stages.length-1?output:'${prefix}_${n+1}';
+      parts.add(stages[n](from,to,'${prefix}s$n'));
+    }
+    return parts.join(';');
+  }
+
+  /// Split / blur / screen-blend block of bloom or halation. The returned
+  /// function takes the input pad, the output pad and a unique tag for the
+  /// internal pads.
+  static String Function(String,String,String) _splitStage(CinematicEffect e,double v) {
+    final halation=e==CinematicEffect.halation;
+    // Highlights only: values under the knee are cut, the rest is stretched
+    // back to full range.
+    final knee=halation?200.0-v*30:185.0-v*40;
+    final gain=(255/(255-knee)).toStringAsFixed(2);
+    final expr="clip((val-${knee.toStringAsFixed(0)})*$gain,0,255)";
+    final lut="lutrgb=r='$expr':g='$expr':b='$expr'";
+    if(halation){
+      final sigma=(3+v*9).toStringAsFixed(2);
+      final opacity=(.14+v*.34).toStringAsFixed(3);
+      return (i,o,t)=>"[$i]format=gbrp,split=2[${t}a][${t}b];"
+          "[${t}b]$lut,gblur=sigma=$sigma,colorchannelmixer=rr=1:gg=0.42:bb=0.12[${t}g];"
+          "[${t}a][${t}g]blend=all_mode=screen:all_opacity=$opacity,format=yuv420p[$o]";
+    }
+    final sigma=(3+v*8).toStringAsFixed(2);
+    final opacity=(.18+v*.40).toStringAsFixed(3);
+    return (i,o,t)=>"[$i]format=gbrp,split=2[${t}a][${t}b];"
+        "[${t}b]$lut,gblur=sigma=$sigma[${t}g];"
+        "[${t}a][${t}g]blend=all_mode=screen:all_opacity=$opacity,format=yuv420p[$o]";
+  }
 }
