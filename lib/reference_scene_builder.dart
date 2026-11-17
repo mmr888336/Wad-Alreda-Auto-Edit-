@@ -2,11 +2,19 @@
 ///
 /// Turns a spoken phrase into a short motion cutaway made of scenes. Every
 /// scene is a composition of layers: a pixel-grid background, one main
-/// pixel-art sprite chosen from the MEANING of the words, a small orbiting
-/// decor sprite, and up to three words that enter one by one with their own
+/// sprite chosen from the MEANING of the words, a small orbiting decor
+/// sprite, an optional transparent VFX overlay (smoke, dust, bokeh, light
+/// leak...) and up to three words that enter one by one with their own
 /// timing, rotation and overshoot. Scenes are joined with the transition
 /// library. The result is a renderer-neutral [MotionProject] plus the list of
 /// assets the renderer has to create. Pure Dart, no I/O.
+///
+/// The main sprite is a pixel-art sprite whenever a word of the phrase has a
+/// pixel meaning (the existing behaviour). Otherwise the semantic visual
+/// library (see MotionVisualLibrary) is searched and its best match is used;
+/// the pixel fallback sprites remain the last resort. The mood also picks a
+/// cinematic look (see MotionVisualPipeline): overlay layers per scene and a
+/// whole-clip grade that the renderer applies after compositing.
 library;
 
 import 'dart:math' as math;
@@ -15,6 +23,8 @@ import 'keyword_callout_planner.dart';
 import 'motion_graphics.dart' show MotionMood;
 import 'motion_scene_model.dart';
 import 'motion_transitions.dart';
+import 'motion_visual_library.dart';
+import 'motion_visual_pipeline.dart';
 
 /// A moment of the video that will be replaced by a motion cutaway.
 class CutawaySpec {
@@ -31,13 +41,24 @@ class CutawaySpec {
   double get duration => end - start;
 }
 
-enum SceneAssetKind { background, sprite, word }
+/// What the renderer has to create for one asset key:
+///  * background: gradient image from [topColor] / [bottomColor];
+///  * sprite: pixel-art sprite named [spriteKey];
+///  * word: [text] drawn as an image;
+///  * visual: semantic library asset whose id is stored in [spriteKey];
+///  * overlay: transparent VFX layer, a MotionOverlayKind name in [spriteKey];
+///  * look: not a layer; a CinematicVfx preset id in [spriteKey] that the
+///    renderer applies to the whole clip after compositing.
+enum SceneAssetKind { background, sprite, word, visual, overlay, look }
 
 /// Describes one image the renderer must create for the motion project.
 class SceneAssetSpec {
   final SceneAssetKind kind;
 
-  /// Sprite key for [SceneAssetKind.sprite], for example `pixel_camera`.
+  /// Key of the thing to draw: sprite key for [SceneAssetKind.sprite] (for
+  /// example `pixel_camera`), library asset id for [SceneAssetKind.visual],
+  /// overlay kind name for [SceneAssetKind.overlay], preset id for
+  /// [SceneAssetKind.look].
   final String? spriteKey;
 
   /// Word to draw for [SceneAssetKind.word].
@@ -81,6 +102,16 @@ class ReferenceSceneBuilder {
 
   /// Master switch for planning motion cutaways.
   static bool enabled = true;
+
+  /// Use the semantic visual library when no pixel sprite fits the words.
+  static bool visualLibraryEnabled = true;
+
+  /// Add VFX overlay layers and the cinematic look to every cutaway.
+  static bool vfxEnabled = true;
+
+  /// Lowest library search score accepted for a scene (3 = one tag found in
+  /// the phrase).
+  static const double minLibraryScore = 3.0;
 
   /// The hook title owns the first seconds of the video.
   static const double firstAllowedStart = 3.6;
@@ -452,6 +483,28 @@ class ReferenceSceneBuilder {
     return keys;
   }
 
+  /// Slow vertical drift for a full-canvas VFX overlay. The overlay is drawn
+  /// slightly larger than the canvas so the drift never shows its edges, and
+  /// its opacity is constant (no per-frame alpha filter on a full frame).
+  static List<MotionKeyframe> _overlayKeys(double dur) {
+    return <MotionKeyframe>[
+      const MotionKeyframe(
+        time: 0,
+        x: 0.5,
+        y: 0.515,
+        scale: 1.06,
+        easing: MotionEase.linear,
+      ),
+      MotionKeyframe(
+        time: dur,
+        x: 0.5,
+        y: 0.485,
+        scale: 1.06,
+        easing: MotionEase.linear,
+      ),
+    ];
+  }
+
   static List<MotionKeyframe> _wordKeys(double layerDur, double y, int j) {
     final rot = j.isEven ? -9.0 : 9.0;
     final t1 = math.min(0.22, layerDur * 0.30);
@@ -523,6 +576,15 @@ class ReferenceSceneBuilder {
         sceneCount == 2 ? MotionTransitions.defaultDuration(transition) : 0.0;
     final sceneDuration = sceneCount == 2 ? (total + overlap) / 2 : total;
 
+    // Semantic assets and cinematic look for the whole phrase.
+    final visualPlan = (visualLibraryEnabled || vfxEnabled)
+        ? MotionVisualPipeline.plan(
+            spokenText: spec.text,
+            mood: mood.name,
+            maxAssets: 3,
+          )
+        : null;
+
     final perScene = (words.length / sceneCount).ceil();
     final spriteFraction = height >= width ? 0.34 : 0.22;
     final assets = <String, SceneAssetSpec>{};
@@ -540,8 +602,18 @@ class ReferenceSceneBuilder {
       final sceneWords = _pickWords(words.sublist(from, to), 3);
       final sceneText = sceneWords.join(' ');
 
-      final mainSprite = spriteKeyFor(sceneText) ??
-          spriteKeyFor(spec.text) ??
+      // A pixel sprite that matches the words always wins (existing look).
+      final pixelSprite = spriteKeyFor(sceneText) ?? spriteKeyFor(spec.text);
+      MotionVisualMatch? libraryMatch;
+      if (visualLibraryEnabled &&
+          pixelSprite == null &&
+          visualPlan != null &&
+          si < visualPlan.assets.length &&
+          visualPlan.assets[si].score >= minLibraryScore) {
+        libraryMatch = visualPlan.assets[si];
+      }
+
+      final mainSprite = pixelSprite ??
           _fallbackSprites[(variant + si).abs() % _fallbackSprites.length];
       final mainIndex = _fallbackSprites.indexOf(mainSprite);
       final decorSprite = _fallbackSprites[
@@ -554,11 +626,19 @@ class ReferenceSceneBuilder {
         topColor: palette[0],
         bottomColor: palette[1],
       );
-      assets['sprite:$sid'] = SceneAssetSpec(
-        kind: SceneAssetKind.sprite,
-        spriteKey: mainSprite,
-        widthFraction: spriteFraction,
-      );
+      if (libraryMatch != null) {
+        assets['sprite:$sid'] = SceneAssetSpec(
+          kind: SceneAssetKind.visual,
+          spriteKey: libraryMatch.asset.id,
+          widthFraction: spriteFraction,
+        );
+      } else {
+        assets['sprite:$sid'] = SceneAssetSpec(
+          kind: SceneAssetKind.sprite,
+          spriteKey: mainSprite,
+          widthFraction: spriteFraction,
+        );
+      }
       assets['decor:$sid'] = SceneAssetSpec(
         kind: SceneAssetKind.sprite,
         spriteKey: decorSprite,
@@ -590,6 +670,29 @@ class ReferenceSceneBuilder {
           keyframes: _spriteKeys(dur),
         ),
       ];
+
+      // VFX overlay between the background and the decor. The `bg:` key keeps
+      // it out of the editor's layer list and out of re-ordering, like the
+      // background; the renderer decides what to draw from the asset kind.
+      if (vfxEnabled && visualPlan != null && visualPlan.overlays.isNotEmpty) {
+        final overlay = visualPlan
+            .overlays[(variant.abs() + si) % visualPlan.overlays.length];
+        assets['bg:fx_$sid'] = SceneAssetSpec(
+          kind: SceneAssetKind.overlay,
+          spriteKey: overlay.name,
+          widthFraction: 1.0,
+        );
+        layers.add(
+          MotionLayer(
+            id: '${sid}_fx',
+            start: sceneStart,
+            end: sceneEnd,
+            zIndex: 2,
+            assetKey: 'bg:fx_$sid',
+            keyframes: _overlayKeys(dur),
+          ),
+        );
+      }
 
       final stagger = sceneWords.isEmpty
           ? 0.0
@@ -626,6 +729,15 @@ class ReferenceSceneBuilder {
         ),
       );
       cursor = sceneEnd;
+    }
+
+    // The cinematic look is a clip-wide grade, not a layer. It travels with
+    // the assets so an edited scene is re-rendered with the same look.
+    if (vfxEnabled && visualPlan != null) {
+      assets['bg:look'] = SceneAssetSpec(
+        kind: SceneAssetKind.look,
+        spriteKey: visualPlan.preset.id,
+      );
     }
 
     return ReferenceSceneResult(
