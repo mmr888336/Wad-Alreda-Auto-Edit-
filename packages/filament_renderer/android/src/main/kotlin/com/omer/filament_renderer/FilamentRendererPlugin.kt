@@ -117,6 +117,26 @@ class FilamentRendererPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             "dispose" ->
                 disposeEngine(result)
 
+            "releaseView" -> {
+                val id = call.argument<Int>("viewId")
+
+                val view = id?.let {
+                    synchronized(viewLock) {
+                        modelViews[it]
+                    }
+                }
+
+                if (view == null) {
+                    // The view is already gone: nothing is left to release.
+                    result.success(true)
+                } else {
+                    // Ordered teardown. The reply is sent only after the
+                    // SurfaceView is detached and the Filament engine of this
+                    // view has been destroyed exactly once.
+                    view.release(result)
+                }
+            }
+
             "getViewDiagnostics" -> {
                 val id = call.argument<Int>("viewId")
 
@@ -349,8 +369,21 @@ private class FilamentModelPlatformView(
     private var framesRendered = 0L
     private var lastError: String? = null
 
+    // True as soon as an ordered release (or dispose) has started. Every
+    // guard in this class treats a view in this state as closed.
     private var disposed = false
     private var frameScheduled = false
+
+    // Ordered-release bookkeeping. The Filament engine of this view is
+    // destroyed exactly once, and only after the SurfaceView has detached.
+    private var releaseCompleted = false
+    private var engineDestroyed = false
+    private var pendingViewer: ModelViewer? = null
+    private var surfaceReleaseCallback: SurfaceHolder.Callback? = null
+    private val releaseWaiters = mutableListOf<MethodChannel.Result>()
+    private val surfaceReleaseTimeout = Runnable {
+        finishRelease(timedOut = true)
+    }
 
     private var captureInProgress = false
     private var captureGeneration = 0
@@ -486,7 +519,9 @@ private class FilamentModelPlatformView(
         target.setOnTouchListener { _, event ->
             val viewer = modelViewer
 
-            if (viewer == null || !modelLoaded) {
+            if (disposed) {
+                true
+            } else if (viewer == null || !modelLoaded) {
                 // First tap starts lazy initialization. The actual render
                 // Surface is replaced before ModelViewer is constructed.
                 requestInitialization()
@@ -857,7 +892,7 @@ private class FilamentModelPlatformView(
 
                         result.error(
                             "FILAMENT_MODEL_FILE",
-                            lastError ?: "Model file load failed.",
+                            lastError ?: "Model load failed.",
                             diagnostics()
                         )
                         return@post
@@ -890,6 +925,17 @@ private class FilamentModelPlatformView(
                                 ?: throw IllegalStateException(
                                     "Filament viewer is unavailable."
                                 )
+
+                            // Free the previous model explicitly and in an
+                            // orderly way before the next one is created, so
+                            // successive scenes never accumulate native
+                            // assets. Rendering is paused (modelLoaded=false)
+                            // until the new asset is ready.
+                            modelLoaded = false
+                            try {
+                                viewer.destroyModel()
+                            } catch (_: Throwable) {
+                            }
 
                             viewer.loadModelGlb(modelBuffer)
 
@@ -1270,7 +1316,17 @@ private class FilamentModelPlatformView(
                     surfaceView,
                     bitmap,
                     { copyResult ->
-                        if (copyResult != PixelCopy.SUCCESS) {
+                        if (disposed || generation != captureGeneration) {
+                            // The view started closing while this copy was in
+                            // flight. Do not touch the (possibly shut down)
+                            // IO executor; just stop the capture.
+                            bitmap.recycle()
+
+                            fail(
+                                "FILAMENT_CAPTURE_CANCELLED",
+                                "The preview closed during capture."
+                            )
+                        } else if (copyResult != PixelCopy.SUCCESS) {
                             bitmap.recycle()
 
                             fail(
@@ -1280,48 +1336,58 @@ private class FilamentModelPlatformView(
                         } else {
                             val currentIndex = frameIndex
 
-                            ioExecutor.execute {
-                                val saved = try {
-                                    val target = File(
-                                        folder,
-                                        "frame_" +
-                                        currentIndex.toString()
-                                            .padStart(5, '0') +
-                                        ".png"
-                                    )
-
-                                    FileOutputStream(target).use { output ->
-                                        bitmap.compress(
-                                            Bitmap.CompressFormat.PNG,
-                                            100,
-                                            output
+                            try {
+                                ioExecutor.execute {
+                                    val saved = try {
+                                        val target = File(
+                                            folder,
+                                            "frame_" +
+                                            currentIndex.toString()
+                                                .padStart(5, '0') +
+                                            ".png"
                                         )
+
+                                        FileOutputStream(target).use { output ->
+                                            bitmap.compress(
+                                                Bitmap.CompressFormat.PNG,
+                                                100,
+                                                output
+                                            )
+                                        }
+                                    } catch (_: Throwable) {
+                                        false
+                                    } finally {
+                                        bitmap.recycle()
                                     }
-                                } catch (_: Throwable) {
-                                    false
-                                } finally {
-                                    bitmap.recycle()
+
+                                    mainHandler.post {
+                                        if (resultSent.get()) {
+                                            return@post
+                                        }
+
+                                        if (!saved) {
+                                            fail(
+                                                "FILAMENT_FRAME_WRITE_FAILED",
+                                                "Could not save frame $currentIndex"
+                                            )
+                                        } else {
+                                            frameIndex++
+
+                                            mainHandler.postDelayed(
+                                                { captureNext() },
+                                                frameDelayMs
+                                            )
+                                        }
+                                    }
                                 }
+                            } catch (error: Throwable) {
+                                bitmap.recycle()
 
-                                mainHandler.post {
-                                    if (resultSent.get()) {
-                                        return@post
-                                    }
-
-                                    if (!saved) {
-                                        fail(
-                                            "FILAMENT_FRAME_WRITE_FAILED",
-                                            "Could not save frame $currentIndex"
-                                        )
-                                    } else {
-                                        frameIndex++
-
-                                        mainHandler.postDelayed(
-                                            { captureNext() },
-                                            frameDelayMs
-                                        )
-                                    }
-                                }
+                                fail(
+                                    "FILAMENT_FRAME_WRITE_FAILED",
+                                    error.message
+                                        ?: "Could not queue frame $currentIndex"
+                                )
                             }
                         }
                     },
@@ -1394,38 +1460,202 @@ private class FilamentModelPlatformView(
 
     override fun getView(): View = root
 
-    override fun dispose() {
+    /**
+     * Ordered, acknowledged release of everything this view owns.
+     *
+     *  1. Stop drawing and the camera, and cancel any capture.
+     *  2. Wait for already-queued frame writes to finish.
+     *  3. Destroy the current model.
+     *  4. Detach the SurfaceView and wait until Android reports that its
+     *     Surface was destroyed (Filament's own callback, registered first,
+     *     has then already detached and flushed its SwapChain).
+     *  5. Destroy the Filament Engine exactly once.
+     *  6. Only then answer Flutter, so Flutter can safely remove the
+     *     PlatformView.
+     *
+     * Safe to call more than once; every caller gets the same outcome.
+     */
+    fun release(result: MethodChannel.Result?) {
+        if (releaseCompleted) {
+            result?.success(true)
+            return
+        }
+
+        if (result != null) {
+            releaseWaiters.add(result)
+        }
+
         if (disposed) return
 
+        // From here on every guard in this class sees a closed view.
         disposed = true
         captureGeneration++
         captureInProgress = false
 
         choreographer.removeFrameCallback(frameCallback)
-
-        surfaceView.holder.removeCallback(holderCallback)
-        surfaceView.setOnTouchListener(null)
+        frameScheduled = false
 
         endCameraGesture()
+        surfaceView.setOnTouchListener(null)
 
         completeInitialization(
             IllegalStateException("The 3D view was disposed.")
         )
 
+        val viewer = modelViewer
+        modelLoaded = false
+
         try {
-            modelViewer?.destroyModel()
+            viewer?.destroyModel()
         } catch (_: Throwable) {
         }
 
+        // Single-thread executor: this task runs only after every earlier
+        // frame-write task has finished.
         try {
-            modelViewer?.engine?.destroy()
+            ioExecutor.execute {
+                mainHandler.post { detachSurfaceThenDestroyEngine(viewer) }
+            }
         } catch (_: Throwable) {
+            detachSurfaceThenDestroyEngine(viewer)
+        }
+    }
+
+    private fun detachSurfaceThenDestroyEngine(viewer: ModelViewer?) {
+        if (releaseCompleted) return
+
+        pendingViewer = viewer
+
+        val target = surfaceView
+
+        val surfaceIsLive = try {
+            target.holder.surface.isValid
+        } catch (_: Throwable) {
+            false
+        }
+
+        try {
+            target.holder.removeCallback(holderCallback)
+        } catch (_: Throwable) {
+        }
+
+        if (!surfaceIsLive) {
+            // No live Surface means Filament has no SwapChain left to detach.
+            try {
+                root.removeView(target)
+            } catch (_: Throwable) {
+            }
+            finishRelease(timedOut = false)
+            return
+        }
+
+        val callback = object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {}
+
+            override fun surfaceChanged(
+                holder: SurfaceHolder,
+                format: Int,
+                width: Int,
+                height: Int
+            ) {
+            }
+
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                mainHandler.post { finishRelease(timedOut = false) }
+            }
+        }
+
+        surfaceReleaseCallback = callback
+        target.holder.addCallback(callback)
+
+        // Safety net: never hang the export if Android never reports it.
+        mainHandler.postDelayed(surfaceReleaseTimeout, 2500L)
+
+        try {
+            root.removeView(target)
+        } catch (error: Throwable) {
+            finishRelease(timedOut = false)
+        }
+    }
+
+    private fun finishRelease(timedOut: Boolean) {
+        if (releaseCompleted) return
+        releaseCompleted = true
+
+        mainHandler.removeCallbacks(surfaceReleaseTimeout)
+
+        surfaceReleaseCallback?.let {
+            try {
+                surfaceView.holder.removeCallback(it)
+            } catch (_: Throwable) {
+            }
+        }
+        surfaceReleaseCallback = null
+
+        var failure: Throwable? = null
+        val viewer = pendingViewer
+        pendingViewer = null
+
+        if (viewer != null && !engineDestroyed) {
+            if (timedOut) {
+                // Destroying the engine while its SwapChain may still be
+                // attached to a live Surface is what crashes natively.
+                // Leaking one engine until process exit is safer.
+                failure = IllegalStateException(
+                    "The render Surface did not detach in time; " +
+                        "the engine was kept alive to avoid a native crash."
+                )
+            } else {
+                engineDestroyed = true
+
+                try {
+                    viewer.engine.flushAndWait()
+                } catch (_: Throwable) {
+                }
+
+                try {
+                    viewer.engine.destroy()
+                } catch (error: Throwable) {
+                    failure = error
+                }
+            }
         }
 
         modelViewer = null
         cameraManipulator = null
         modelLoaded = false
+        surfaceReady = false
 
-        ioExecutor.shutdownNow()
+        try {
+            ioExecutor.shutdown()
+        } catch (_: Throwable) {
+        }
+
+        val finalError = failure
+        val waiters = releaseWaiters.toList()
+        releaseWaiters.clear()
+
+        waiters.forEach { waiter ->
+            try {
+                if (finalError == null) {
+                    waiter.success(true)
+                } else {
+                    waiter.error(
+                        "FILAMENT_RELEASE_FAILED",
+                        finalError.message
+                            ?: finalError.javaClass.simpleName,
+                        null
+                    )
+                }
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    override fun dispose() {
+        // Flutter calls this synchronously when the PlatformView leaves the
+        // tree. The same ordered release runs; it simply has no waiting
+        // caller. Flutter should normally have called "releaseView" first.
+        release(null)
     }
 }
