@@ -57,7 +57,8 @@ void main() {
         timeVar: 'T',
       );
       expect(expr, contains('(-0.3000)'));
-      expect('if(lt('.allMatches(expr).length, 7));
+      // Six sampled segments plus the outer "before first keyframe" check.
+      expect('if(lt('.allMatches(expr).length, 7);
       expect(_count(expr, '('), _count(expr, ')'));
     });
 
