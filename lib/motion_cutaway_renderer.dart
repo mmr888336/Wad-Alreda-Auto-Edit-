@@ -13,6 +13,12 @@
 /// applies the cinematic look stored in the project's `look` asset as a
 /// post-grade. If the graded render fails it is retried without the grade, so
 /// a filter missing from the bundled FFmpegKit never costs the cutaway.
+///
+/// Every scene also gets a depth camera (see [DepthCameraPlanner]): parallax,
+/// orbit, zoom and perspective change between layers of different depth. The
+/// camera is folded into the layer expressions, and if the camera render
+/// fails the clip is rendered again flat, so a camera problem never costs the
+/// cutaway either.
 library;
 
 import 'dart:io';
@@ -23,6 +29,7 @@ import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 
 import 'cinematic_vfx.dart';
+import 'depth_camera_planner.dart';
 import 'motion_ffmpeg_adapter.dart';
 import 'motion_graphics.dart' show MotionMood;
 import 'motion_scene_json.dart';
@@ -44,6 +51,9 @@ class MotionCutawayRenderer {
 
   /// Master switch for motion cutaways in exported videos.
   static bool enabled = true;
+
+  /// Give every scene of a new cutaway a depth camera.
+  static bool depthCameraEnabled = true;
 
   /// The motion canvas is rendered at most this many pixels on its short
   /// side (then scaled to the video size by the timeline overlay).
@@ -176,7 +186,7 @@ class MotionCutawayRenderer {
       final mw = _even(outW * factor);
       final mh = _even(outH * factor);
 
-      final built = ReferenceSceneBuilder.buildCutaway(
+      var built = ReferenceSceneBuilder.buildCutaway(
         id: 'cut$index',
         spec: spec,
         width: mw,
@@ -184,6 +194,17 @@ class MotionCutawayRenderer {
         mood: mood,
         variant: index,
       );
+
+      // Camera per scene; a planner problem only means a flat cutaway.
+      if (depthCameraEnabled) {
+        try {
+          built = DepthCameraPlanner.upgrade(
+            built,
+            mood: mood,
+            variant: index,
+          );
+        } catch (_) {}
+      }
 
       final clip = await renderBuilt(
         built: built,
@@ -350,22 +371,33 @@ class MotionCutawayRenderer {
         }
       }
 
-      final plan = MotionFfmpegAdapter.build(
-        project: built.project,
-        assets: assets,
-      );
-      if (plan.totalDuration < 1.0) return null;
-
       final out = '$dir/motion_scene_${stamp}_$index.mp4';
-
-      // First try with the cinematic grade; if the bundled FFmpegKit rejects
-      // a filter, render the plain composition instead.
-      var ok = false;
       final look = _lookFilters(built.assets);
-      if (look.isNotEmpty) {
-        ok = await _run(_withLook(plan, look), out);
+      final hasCamera =
+          built.project.scenes.any((s) => s.camera?.isActive ?? false);
+
+      // Try the depth camera first, then the flat composition. Each attempt
+      // is tried with the cinematic grade and then without it, so a filter
+      // missing from the bundled FFmpegKit never costs the cutaway.
+      var ok = false;
+      var duration = 0.0;
+      final attempts = hasCamera ? const <bool>[true, false] : const <bool>[false];
+      for (final withCamera in attempts) {
+        final plan = MotionFfmpegAdapter.build(
+          project: built.project,
+          assets: assets,
+          depthCamera: withCamera,
+        );
+        if (plan.totalDuration < 1.0) return null;
+        if (look.isNotEmpty) {
+          ok = await _run(_withLook(plan, look), out);
+        }
+        if (!ok) ok = await _run(plan, out);
+        if (ok) {
+          duration = plan.totalDuration;
+          break;
+        }
       }
-      if (!ok) ok = await _run(plan, out);
       if (!ok) return null;
 
       // The editable description is optional: the clip works without it.
@@ -382,7 +414,7 @@ class MotionCutawayRenderer {
         temps.add(sidecar);
       } catch (_) {}
 
-      return MotionCutawayClip(path: out, duration: plan.totalDuration);
+      return MotionCutawayClip(path: out, duration: duration);
     } catch (_) {
       return null;
     }
