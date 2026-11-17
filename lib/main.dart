@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:filament_renderer/filament_renderer.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -245,6 +247,11 @@ class _HomePageState extends State<HomePage> {
   /// The 3D view is mounted automatically for the 3D phase of an export.
   bool _threeDExportActive = false;
 
+  /// The release that is currently running, if any. Every caller of
+  /// [_releaseThreeDSurface] waits for the same native release instead of
+  /// starting a second one.
+  Future<void>? _threeDReleaseFuture;
+
   final ScrollController _scrollController = ScrollController();
 
   /// Set when the previous run ended abruptly inside the 3D phase.
@@ -315,12 +322,15 @@ class _HomePageState extends State<HomePage> {
   void _toggleThreeDPanel() {
     if (busy) return;
 
-    setState(() {
-      _showThreeDPanel = !_showThreeDPanel;
+    if (_threeDSurfaceMounted) {
+      // Turning the engine off goes through the same ordered native release
+      // as the end of an export.
+      unawaited(_releaseThreeDSurface());
+      return;
+    }
 
-      if (!_threeDSurfaceMounted) {
-        _threeDViewId = null;
-      }
+    setState(() {
+      _showThreeDPanel = true;
     });
   }
 
@@ -350,13 +360,44 @@ class _HomePageState extends State<HomePage> {
     return _threeDViewId;
   }
 
-  /// Unmounts the 3D view (frees its GPU memory and stops the heating).
-  /// Safe to call more than once.
-  Future<void> _releaseThreeDSurface() async {
+  /// Releases the native 3D view and only then removes it from the widget
+  /// tree (which frees its GPU memory and stops the heating).
+  ///
+  /// The native side confirms explicitly when the SurfaceView is detached and
+  /// the Filament engine is destroyed, so there is no guessing delay.
+  /// Safe to call more than once; concurrent callers share one release.
+  Future<void> _releaseThreeDSurface() {
+    final running = _threeDReleaseFuture;
+    if (running != null) return running;
+
     if (!_threeDExportActive &&
         !_showThreeDPanel &&
         _threeDViewId == null) {
-      return;
+      return Future<void>.value();
+    }
+
+    final future = _performThreeDRelease().whenComplete(() {
+      _threeDReleaseFuture = null;
+    });
+
+    _threeDReleaseFuture = future;
+    return future;
+  }
+
+  Future<void> _performThreeDRelease() async {
+    final viewId = _threeDViewId;
+
+    if (viewId != null) {
+      try {
+        // Completes only after Android has stopped drawing, finished pending
+        // frame writes, detached the SurfaceView and destroyed the engine.
+        await FilamentRenderer.releaseView(viewId: viewId)
+            .timeout(const Duration(seconds: 10));
+      } catch (error) {
+        // Never block the export on a failed release: the view is removed
+        // below either way, and the native side guards its own teardown.
+        debugPrint('Filament release failed: $error');
+      }
     }
 
     if (!mounted) return;
@@ -367,9 +408,12 @@ class _HomePageState extends State<HomePage> {
       _threeDViewId = null;
     });
 
-    // Give the platform view a moment to free its memory before FFmpeg
-    // starts the heavy compositing.
-    await Future<void>.delayed(const Duration(milliseconds: 600));
+    // Let Flutter finish the frame that removes the PlatformView. The timeout
+    // keeps this from hanging if the app is in the background (no frames).
+    try {
+      await WidgetsBinding.instance.endOfFrame
+          .timeout(const Duration(seconds: 1));
+    } catch (_) {}
   }
 
   Future<void> _pick() async {
