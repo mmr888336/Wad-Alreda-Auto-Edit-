@@ -14,11 +14,13 @@
 /// post-grade. If the graded render fails it is retried without the grade, so
 /// a filter missing from the bundled FFmpegKit never costs the cutaway.
 ///
-/// Every scene also gets a depth camera (see [DepthCameraPlanner]): parallax,
-/// orbit, zoom and perspective change between layers of different depth. The
-/// camera is folded into the layer expressions, and if the camera render
-/// fails the clip is rendered again flat, so a camera problem never costs the
-/// cutaway either.
+/// The cutaway is built by the continuous scene generator (several beats,
+/// each with its own composition, see [ContinuousSceneGenerator]); if that
+/// fails the plain scene builder is used. Every scene also gets a depth
+/// camera (see [DepthCameraPlanner]): parallax, orbit, zoom and perspective
+/// change between layers of different depth. The camera is folded into the
+/// layer expressions, and if the camera render fails the clip is rendered
+/// again flat, so a camera problem never costs the cutaway either.
 library;
 
 import 'dart:io';
@@ -29,6 +31,7 @@ import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 
 import 'cinematic_vfx.dart';
+import 'continuous_scene_generator.dart';
 import 'depth_camera_planner.dart';
 import 'motion_ffmpeg_adapter.dart';
 import 'motion_graphics.dart' show MotionMood;
@@ -186,14 +189,27 @@ class MotionCutawayRenderer {
       final mw = _even(outW * factor);
       final mh = _even(outH * factor);
 
-      var built = ReferenceSceneBuilder.buildCutaway(
-        id: 'cut$index',
-        spec: spec,
-        width: mw,
-        height: mh,
-        mood: mood,
-        variant: index,
-      );
+      // Several beats with different compositions; the plain builder is the
+      // fallback if the generator cannot handle the phrase.
+      final generated = ContinuousSceneGenerator.enabled
+          ? ContinuousSceneGenerator.tryBuild(
+              id: 'cut$index',
+              spec: spec,
+              width: mw,
+              height: mh,
+              mood: mood,
+              variant: index,
+            )
+          : null;
+      var built = generated ??
+          ReferenceSceneBuilder.buildCutaway(
+            id: 'cut$index',
+            spec: spec,
+            width: mw,
+            height: mh,
+            mood: mood,
+            variant: index,
+          );
 
       // Camera per scene; a planner problem only means a flat cutaway.
       if (depthCameraEnabled) {
