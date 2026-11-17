@@ -29,6 +29,21 @@ class FilamentRenderer {
     await _channel.invokeMethod<void>('dispose');
   }
 
+  /// Ordered release of one native 3D view.
+  ///
+  /// Android stops drawing, finishes pending frame writes, destroys the model,
+  /// detaches the SurfaceView, waits until its Surface is gone and destroys the
+  /// Filament engine exactly once. The future completes only after all of that
+  /// has finished, so the PlatformView can then be removed from the widget
+  /// tree. Completes with `true` when the view is already gone.
+  static Future<bool> releaseView({required int viewId}) async {
+    final value = await _channel.invokeMethod<bool>(
+      'releaseView',
+      <String, Object>{'viewId': viewId},
+    );
+    return value ?? false;
+  }
+
   static Future<Map<String, dynamic>> getViewDiagnostics(int viewId) async {
     final value = await _channel.invokeMapMethod<String, dynamic>(
       'getViewDiagnostics',
