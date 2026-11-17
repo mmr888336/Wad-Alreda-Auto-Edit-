@@ -12,7 +12,9 @@ import 'broll.dart';
 import 'settings.dart';
 import 'editing_engine.dart';
 import 'keyword_callout_planner.dart';
+import 'motion_cutaway_renderer.dart';
 import 'motion_graphics.dart';
+import 'reference_scene_builder.dart';
 import 'timeline_engine.dart';
 import 'sound_effect_generator.dart';
 import 'silence_cutter.dart';
@@ -397,16 +399,21 @@ class Enhancer {
     ];
 
     final brollLayers = <TimelineLayer>[];
+    var motionSceneCount = 0;
     for (var i = 0; i < brolls.length; i++) {
       final item = brolls[i];
       final start = item.start.clamp(0.0, duration).toDouble();
       final end = item.end.clamp(0.0, duration).toDouble();
       if (end <= start + 0.001) continue;
+      final isMotionScene = item.path.contains('motion_scene_');
+      if (isMotionScene) motionSceneCount++;
       brollLayers.add(TimelineLayer(
         id: 'broll_$i',
         trackId: brollTrackId,
         type: TimelineLayerType.broll,
-        name: 'لقطة إضافية ${brollLayers.length + 1}',
+        name: isMotionScene
+            ? 'مشهد موشن $motionSceneCount'
+            : 'لقطة إضافية ${brollLayers.length + 1 - motionSceneCount}',
         start: start,
         end: end,
         zIndex: 10,
@@ -809,6 +816,64 @@ class Enhancer {
       }
     }
     report(0.36);
+
+    // Motion Smith cutaways: pixel-art scenes built from the meaning of the
+    // speech (background, sprite, independent animated words, transitions),
+    // rendered by the Motion engine and placed like B-roll clips.
+    if (s.visualEffects &&
+        analysis != null &&
+        caps.isNotEmpty &&
+        MotionCutawayRenderer.enabled &&
+        ReferenceSceneBuilder.enabled) {
+      try {
+        final maxCutaways = switch (motionPlan.mood) {
+          MotionMood.calm => 1,
+          MotionMood.cinematic => 2,
+          MotionMood.dynamic => 3,
+        };
+        final specs = ReferenceSceneBuilder.planCutaways(
+          captions: <CalloutSource>[
+            for (final caption in caps)
+              CalloutSource(start: caption.start, end: caption.end, text: caption.text),
+          ],
+          duration: cutSec,
+          maxCount: maxCutaways,
+          avoid: <List<double>>[
+            for (final item in brolls) <double>[item.start, item.end],
+          ],
+        );
+        var made = 0;
+        for (var i = 0; i < specs.length; i++) {
+          _checkCancel();
+          onStatus?.call('جاري بناء مشهد موشن (${i + 1}/${specs.length})...');
+          final clip = await MotionCutawayRenderer.render(
+            spec: specs[i],
+            dir: dir,
+            stamp: stamp,
+            index: i,
+            outW: outW,
+            outH: outH,
+            mood: motionPlan.mood,
+            fontFamily: captionFont,
+            temps: temps,
+          );
+          if (clip == null) continue;
+          temps.add(clip.path);
+          brolls.add(_Broll(clip.path, specs[i].start, specs[i].start + clip.duration));
+          made++;
+        }
+        if (made > 0) {
+          brolls.sort((a, b) => a.start.compareTo(b.start));
+          notes.add('تم إضافة $made مشهد موشن (Pixel Art) مبني من معنى الكلام عبر محرك Motion الجديد.');
+        } else if (specs.isNotEmpty) {
+          notes.add('تعذر تجهيز مشاهد الموشن؛ استمر التصدير بدونها.');
+        }
+      } catch (e) {
+        if (JobControl.cancelled) rethrow;
+        notes.add('تعذر تجهيز مشاهد الموشن: $e');
+      }
+    }
+    report(0.37);
 
     String? whoosh;
     if (s.sfx && s.soundEffectStyle != 'none') {
