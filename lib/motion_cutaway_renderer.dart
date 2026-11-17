@@ -16,11 +16,14 @@
 ///
 /// The cutaway is built by the continuous scene generator (several beats,
 /// each with its own composition, see [ContinuousSceneGenerator]); if that
-/// fails the plain scene builder is used. Every scene also gets a depth
-/// camera (see [DepthCameraPlanner]): parallax, orbit, zoom and perspective
-/// change between layers of different depth. The camera is folded into the
-/// layer expressions, and if the camera render fails the clip is rendered
-/// again flat, so a camera problem never costs the cutaway either.
+/// fails the plain scene builder is used. Inside one export the first scene
+/// of every cutaway also differs from the last scene of the cutaway before it
+/// (see [SceneLayoutMemory]), so the composition keeps changing across the
+/// whole video. Every scene also gets a depth camera (see
+/// [DepthCameraPlanner]): parallax, orbit, zoom and perspective change
+/// between layers of different depth. The camera is folded into the layer
+/// expressions, and if the camera render fails the clip is rendered again
+/// flat, so a camera problem never costs the cutaway either.
 library;
 
 import 'dart:io';
@@ -40,6 +43,7 @@ import 'motion_vfx_overlay.dart';
 import 'motion_visual_library.dart';
 import 'pixel_art_sprites.dart';
 import 'reference_scene_builder.dart';
+import 'scene_layout_memory.dart';
 import 'text_render.dart';
 
 class MotionCutawayClip {
@@ -169,6 +173,46 @@ class MotionCutawayRenderer {
   static int _seedFor(String key) =>
       key.codeUnits.fold<int>(7, (a, b) => (a * 31 + b) & 0x7FFFFFFF);
 
+  /// Builds the cutaway of [spec]: the continuous generator first (and its
+  /// last layout is remembered for the next cutaway of the same export), the
+  /// plain scene builder as the fallback.
+  static ReferenceSceneResult _build({
+    required CutawaySpec spec,
+    required int stamp,
+    required int index,
+    required int width,
+    required int height,
+    required MotionMood mood,
+  }) {
+    if (ContinuousSceneGenerator.enabled) {
+      try {
+        final plan = ContinuousSceneGenerator.build(
+          id: 'cut$index',
+          spec: spec,
+          width: width,
+          height: height,
+          mood: mood,
+          variant: index,
+          previousLayout: SceneLayoutMemory.previousFor(stamp),
+        );
+        if (plan.layouts.isNotEmpty) {
+          SceneLayoutMemory.remember(stamp, plan.layouts.last);
+        }
+        return plan.result;
+      } catch (_) {
+        // Fall through to the plain builder.
+      }
+    }
+    return ReferenceSceneBuilder.buildCutaway(
+      id: 'cut$index',
+      spec: spec,
+      width: width,
+      height: height,
+      mood: mood,
+      variant: index,
+    );
+  }
+
   /// Renders [spec] to `motion_scene_<stamp>_<index>.mp4` inside [dir].
   /// Every temporary image is added to [temps]. Returns null on failure.
   static Future<MotionCutawayClip?> render({
@@ -191,25 +235,14 @@ class MotionCutawayRenderer {
 
       // Several beats with different compositions; the plain builder is the
       // fallback if the generator cannot handle the phrase.
-      final generated = ContinuousSceneGenerator.enabled
-          ? ContinuousSceneGenerator.tryBuild(
-              id: 'cut$index',
-              spec: spec,
-              width: mw,
-              height: mh,
-              mood: mood,
-              variant: index,
-            )
-          : null;
-      var built = generated ??
-          ReferenceSceneBuilder.buildCutaway(
-            id: 'cut$index',
-            spec: spec,
-            width: mw,
-            height: mh,
-            mood: mood,
-            variant: index,
-          );
+      var built = _build(
+        spec: spec,
+        stamp: stamp,
+        index: index,
+        width: mw,
+        height: mh,
+        mood: mood,
+      );
 
       // Camera per scene; a planner problem only means a flat cutaway.
       if (depthCameraEnabled) {
