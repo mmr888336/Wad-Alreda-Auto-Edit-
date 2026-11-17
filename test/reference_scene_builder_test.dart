@@ -2,6 +2,7 @@ import 'package:auto_edit/keyword_callout_planner.dart';
 import 'package:auto_edit/motion_ffmpeg_adapter.dart';
 import 'package:auto_edit/motion_graphics.dart';
 import 'package:auto_edit/motion_scene_model.dart';
+import 'package:auto_edit/motion_transitions.dart';
 import 'package:auto_edit/reference_scene_builder.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -25,8 +26,10 @@ void main() {
     });
 
     test('matches English words and returns null for unknown text', () {
-      expect(ReferenceSceneBuilder.spriteKeyFor('Play the game'),
-          'pixel_game_controller');
+      expect(
+        ReferenceSceneBuilder.spriteKeyFor('Play the game'),
+        'pixel_game_controller',
+      );
       expect(ReferenceSceneBuilder.spriteKeyFor('xyz qwerty'), isNull);
     });
   });
@@ -116,7 +119,7 @@ void main() {
       expect(result.project.scenes.length, 2);
       expect(
         result.project.scenes[1].transitionIn,
-        isNot(MotionTransitionKindProbe.hardCut),
+        isNot(MotionTransitionKind.hardCut),
       );
     });
 
@@ -162,9 +165,4 @@ void main() {
       expect(plan.totalDuration, closeTo(2.6, 0.05));
     });
   });
-}
-
-/// Local alias so the test reads clearly without another import line.
-class MotionTransitionKindProbe {
-  static const hardCut = MotionTransitionKind.hardCut;
 }

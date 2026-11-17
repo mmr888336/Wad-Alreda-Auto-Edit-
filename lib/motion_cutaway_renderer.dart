@@ -130,62 +130,65 @@ class MotionCutawayRenderer {
         final asset = entry.value;
         final safe = key.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
 
-        switch (asset.kind) {
-          case SceneAssetKind.background:
-            final path = '$dir/mot_${stamp}_${index}_$safe.png';
-            await File(path).writeAsBytes(
-              _backgroundPng(asset.topColor, asset.bottomColor, mw, mh),
+        if (asset.kind == SceneAssetKind.background) {
+          final bgPath = '$dir/mot_${stamp}_${index}_$safe.png';
+          await File(bgPath).writeAsBytes(
+            _backgroundPng(asset.topColor, asset.bottomColor, mw, mh),
+            flush: true,
+          );
+          temps.add(bgPath);
+          assets[key] = MotionRenderAsset(
+            path: bgPath,
+            aspect: mh / mw,
+            widthFraction: 1.0,
+          );
+        } else if (asset.kind == SceneAssetKind.sprite) {
+          final sprite = PixelSprites.byKey(asset.spriteKey ?? '');
+          if (sprite == null) continue;
+          final cached = spritePaths[sprite.key];
+          final spritePath =
+              cached ?? '$dir/mot_${stamp}_${index}_${sprite.key}.png';
+          if (cached == null) {
+            await File(spritePath).writeAsBytes(
+              sprite.toPng(scale: 8),
               flush: true,
             );
-            temps.add(path);
-            assets[key] = MotionRenderAsset(
-              path: path,
-              aspect: mh / mw,
-              widthFraction: 1.0,
-            );
-          case SceneAssetKind.sprite:
-            final sprite = PixelSprites.byKey(asset.spriteKey ?? '');
-            if (sprite == null) continue;
-            var path = spritePaths[sprite.key];
-            if (path == null) {
-              path = '$dir/mot_${stamp}_${index}_${sprite.key}.png';
-              await File(path).writeAsBytes(sprite.toPng(scale: 8), flush: true);
-              temps.add(path);
-              spritePaths[sprite.key] = path;
-            }
-            assets[key] = MotionRenderAsset(
-              path: path,
-              aspect: sprite.height / sprite.width,
-              widthFraction: asset.widthFraction,
-            );
-          case SceneAssetKind.word:
-            final text = asset.text;
-            if (text == null || text.trim().isEmpty) continue;
-            if (!fontReady) {
-              await TextRender.prepareFont(
-                fontFamily: fontFamily,
-                fontSize: fontSize,
-                style: 'bold_center',
-              );
-              fontReady = true;
-            }
-            final path = '$dir/mot_${stamp}_${index}_$safe.png';
-            await TextRender.png(
-              text: text,
-              outPath: path,
-              width: mw,
-              fontSize: fontSize,
+            temps.add(spritePath);
+            spritePaths[sprite.key] = spritePath;
+          }
+          assets[key] = MotionRenderAsset(
+            path: spritePath,
+            aspect: sprite.height / sprite.width,
+            widthFraction: asset.widthFraction,
+          );
+        } else {
+          final text = asset.text;
+          if (text == null || text.trim().isEmpty) continue;
+          if (!fontReady) {
+            await TextRender.prepareFont(
               fontFamily: fontFamily,
+              fontSize: fontSize,
               style: 'bold_center',
             );
-            temps.add(path);
-            final size = await _pngSize(path);
-            if (size == null) continue;
-            assets[key] = MotionRenderAsset(
-              path: path,
-              aspect: size[1] / size[0],
-              widthFraction: 1.0,
-            );
+            fontReady = true;
+          }
+          final wordPath = '$dir/mot_${stamp}_${index}_$safe.png';
+          await TextRender.png(
+            text: text,
+            outPath: wordPath,
+            width: mw,
+            fontSize: fontSize,
+            fontFamily: fontFamily,
+            style: 'bold_center',
+          );
+          temps.add(wordPath);
+          final size = await _pngSize(wordPath);
+          if (size == null) continue;
+          assets[key] = MotionRenderAsset(
+            path: wordPath,
+            aspect: size[1] / size[0],
+            widthFraction: 1.0,
+          );
         }
       }
 
