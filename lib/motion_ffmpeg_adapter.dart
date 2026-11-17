@@ -1,12 +1,14 @@
 /// Turns a [MotionProject] into an FFmpeg filter_complex plan.
 ///
 /// Per scene: a solid colour background, then every sprite/image layer is
-/// scaled (nearest-neighbour, animated) and overlaid with animated position
-/// and optional animated opacity. Scenes are joined with the transition
-/// library (xfade, or concat for hard cuts).
+/// rotated (optional), scaled (nearest-neighbour, animated) and overlaid with
+/// animated position and optional animated opacity. Scenes are joined with
+/// the transition library (xfade, or concat for hard cuts).
 ///
-/// Limits of this first version (by design, to stay predictable):
-///  * layer rotation is not rendered yet;
+/// Notes:
+///  * layer rotation is keyframed in DEGREES (clockwise positive) and is
+///    rendered with FFmpeg's `rotate` filter on a transparent square canvas,
+///    so rotated corners are never cropped or filled with black;
 ///  * layers without a registered asset are skipped and reported;
 ///  * a transition overlaps the end of the previous scene and the start of
 ///    the next one, so the total length is the scene sum minus the overlaps.
@@ -203,6 +205,11 @@ class MotionFfmpegAdapter {
     return layer.keyframes.any((k) => (k.opacity - 1).abs() > 1e-9);
   }
 
+  static bool _needsRotation(MotionLayer layer) {
+    if (layer.keyframes.isEmpty) return layer.rotation.abs() > 1e-9;
+    return layer.keyframes.any((k) => k.rotation.abs() > 1e-9);
+  }
+
   static MotionFfmpegPlan build({
     required MotionProject project,
     required Map<String, MotionRenderAsset> assets,
@@ -251,12 +258,25 @@ class MotionFfmpegAdapter {
         final yExpr = _prop(layer, (k) => k.y, layer.y, tVar);
         final sExpr = _prop(layer, (k) => k.scale, layer.scale, tVar);
 
-        final baseW = project.width * asset.widthFraction;
+        // A rotated layer is drawn on a transparent square whose side is the
+        // image diagonal, so the on-screen size is computed from that square.
+        final rotated = _needsRotation(layer);
+        final baseW = project.width *
+            asset.widthFraction *
+            (rotated ? math.sqrt(1 + asset.aspect * asset.aspect) : 1.0);
+        final baseAspect = rotated ? 1.0 : asset.aspect;
         final wExpr = "max(2,trunc(${_num(baseW)}*($sExpr)/2)*2)";
         final hExpr =
-            "max(2,trunc(${_num(baseW * asset.aspect)}*($sExpr)/2)*2)";
+            "max(2,trunc(${_num(baseW * baseAspect)}*($sExpr)/2)*2)";
 
         final parts = <String>['format=rgba'];
+        if (rotated) {
+          final rExpr = _prop(layer, (k) => k.rotation, layer.rotation, tVar);
+          parts.add(
+            "rotate=a='($rExpr)*PI/180':c=none:"
+            "ow='hypot(iw,ih)':oh='hypot(iw,ih)':bilinear=0",
+          );
+        }
         if (_needsOpacity(layer)) {
           final oExpr = _prop(layer, (k) => k.opacity, layer.opacity, gVar);
           parts.add(
