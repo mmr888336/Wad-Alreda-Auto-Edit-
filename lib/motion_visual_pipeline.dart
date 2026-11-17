@@ -35,6 +35,7 @@ class MotionVisualPipeline {
   static String presetIdFor(String mood)=>switch(mood){'calm'=>'documentary','dynamic'=>'action','dream'=>'dream','tech'=>'tech','dramatic'=>'dramatic','filmic'=>'filmic',_=>'clean_cinema'};
   static MotionVisualPlan plan({required String spokenText,String mood='cinematic',int maxAssets=3}) {
     final id=presetIdFor(mood);
-    return MotionVisualPlan(MotionVisualLibrary.search(spokenText,limit:maxAssets),CinematicVfx.preset(id)!,overlays:_overlaysByPreset[id]??const <MotionOverlayKind>[]);
+    // Diverse picks: neighbouring scenes get different kinds of picture.
+    return MotionVisualPlan(MotionVisualLibrary.searchDiverse(spokenText,limit:maxAssets),CinematicVfx.preset(id)!,overlays:_overlaysByPreset[id]??const <MotionOverlayKind>[]);
   }
 }
