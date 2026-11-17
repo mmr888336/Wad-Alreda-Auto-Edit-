@@ -6,6 +6,10 @@
 /// or remove layers. Every change goes through [MotionSceneEditing], so the
 /// document stays valid. "Apply" re-renders the clip with the Motion engine
 /// (see [MotionCutawayRenderer.renderBuilt]) and returns the new clip.
+///
+/// The preview applies the depth camera of the scene (the same maths as the
+/// export, see [DepthCameraEngine]), and the editor can change the camera of
+/// a scene and the depth of a layer.
 library;
 
 import 'dart:io';
@@ -14,6 +18,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import 'app_localizations.dart';
+import 'depth_camera_engine.dart';
+import 'depth_camera_panel.dart';
 import 'motion_cutaway_renderer.dart';
 import 'motion_scene_editing.dart';
 import 'motion_scene_json.dart';
@@ -98,6 +104,28 @@ TextPainter _wordPainter(
   return painter;
 }
 
+/// State of [layer] at time [t] with the depth camera of its scene applied
+/// (the same maths as the export). Scenes without a camera return the plain
+/// keyframed state.
+MotionLayerState _stateWithCamera(
+  MotionSceneDocument doc,
+  MotionLayer layer,
+  double t,
+) {
+  final state = layer.stateAt(t);
+  for (final scene in doc.project.scenes) {
+    if (!scene.isActiveAt(t)) continue;
+    if (!scene.layers.any((other) => other.id == layer.id)) continue;
+    return DepthCameraEngine.applyToLayer(
+      scene: scene,
+      layer: layer,
+      state: state,
+      time: t,
+    );
+  }
+  return state;
+}
+
 /// Screen rectangle (before rotation) covered by [layer] at time [t], or null
 /// for layers that are not selectable (backgrounds, unknown assets).
 Rect? _layerRect(
@@ -110,7 +138,7 @@ Rect? _layerRect(
   if (key == null) return null;
   final spec = doc.assets[key];
   if (spec == null) return null;
-  final state = layer.stateAt(t);
+  final state = _stateWithCamera(doc, layer, t);
   final center = Offset(state.x * size.width, state.y * size.height);
 
   if (spec.kind == SceneAssetKind.sprite) {
@@ -179,7 +207,7 @@ class _ScenePainter extends CustomPainter {
     if (key == null) return;
     final spec = doc.assets[key];
     if (spec == null) return;
-    final state = layer.stateAt(t);
+    final state = _stateWithCamera(doc, layer, t);
 
     if (spec.kind == SceneAssetKind.background) {
       final rect = Offset.zero & size;
@@ -746,6 +774,15 @@ class _MotionSceneEditorPageState extends State<MotionSceneEditorPage>
                   _sceneBar(scene),
                   const SizedBox(height: 14),
                   if (scene != null) ...[
+                    DepthCameraPanel(
+                      key: ValueKey<String>('camera_${scene.id}'),
+                      camera: scene.camera,
+                      rtl: _rtl,
+                      onChanged: (camera) => _commit(
+                        MotionSceneEditing.withCamera(_doc, scene.id, camera),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
                     _sectionTitle(
                       _s('الطبقات (الأمامية أولاً)', 'Layers (front first)'),
                       Icons.layers_outlined,
@@ -1102,6 +1139,15 @@ class _MotionSceneEditorPageState extends State<MotionSceneEditorPage>
               });
             },
             onChangeEnd: (_) => _trimBase = null,
+          ),
+          LayerDepthControl(
+            key: ValueKey<String>('depth_${layer.id}'),
+            depth: layer.depth,
+            autoDepth: DepthCameraEngine.depthOf(scene, layer),
+            rtl: _rtl,
+            onChanged: (depth) => _commit(
+              MotionSceneEditing.withDepth(_doc, layer.id, depth),
+            ),
           ),
           if (isWord)
             Align(
