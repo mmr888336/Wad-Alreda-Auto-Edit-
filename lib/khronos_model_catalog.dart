@@ -2,7 +2,7 @@ import 'three_d_asset_service.dart';
 
 /// A small, reliable model from the Khronos glTF sample library (direct GLB
 /// files on GitHub). It is the safety net used when the online libraries
-/// return nothing for a scene.
+/// return nothing relevant for a scene.
 class KhronosModel {
   final String name;
   final List<String> tags;
@@ -17,12 +17,12 @@ class KhronosModelCatalog {
   KhronosModelCatalog._();
 
   static const List<KhronosModel> models = <KhronosModel>[
-    KhronosModel('Lantern', <String>['lantern', 'lamp', 'light', 'candle', 'crescent']),
+    KhronosModel('Lantern', <String>['lantern', 'lamp', 'light', 'candle', 'crescent', 'hope', 'idea', 'guide', 'night']),
     KhronosModel('Avocado', <String>['avocado', 'fruit', 'food']),
-    KhronosModel('AntiqueCamera', <String>['camera', 'photo', 'video', 'film', 'antique']),
+    KhronosModel('AntiqueCamera', <String>['camera', 'photo', 'video', 'film', 'antique', 'cinema', 'movie', 'memory', 'story']),
     KhronosModel('BoomBox', <String>['radio', 'speaker', 'music', 'boombox', 'sound', 'audio', 'microphone']),
     KhronosModel('BarramundiFish', <String>['fish', 'sea', 'ocean', 'animal']),
-    KhronosModel('DamagedHelmet', <String>['helmet', 'robot', 'space', 'technology', 'shield']),
+    KhronosModel('DamagedHelmet', <String>['helmet', 'robot', 'space', 'technology', 'shield', 'future', 'innovation', 'cyber', 'ai']),
     KhronosModel('Duck', <String>['duck', 'bird', 'toy', 'animal']),
     KhronosModel('Fox', <String>['fox', 'animal', 'nature', 'wildlife']),
     KhronosModel('WaterBottle', <String>['bottle', 'water', 'drink']),
@@ -33,15 +33,17 @@ class KhronosModelCatalog {
     KhronosModel('BrainStem', <String>['robot', 'machine', 'technology', 'brain']),
     KhronosModel('ABeautifulGame', <String>['chess', 'game', 'strategy', 'board', 'scale', 'balance']),
     KhronosModel('GlamVelvetSofa', <String>['sofa', 'couch', 'furniture', 'house']),
-    KhronosModel('MosquitoInAmber', <String>['amber', 'mosquito', 'insect', 'time', 'hourglass', 'clock', 'crystal', 'gold', 'coins']),
+    KhronosModel('MosquitoInAmber', <String>['amber', 'mosquito', 'insect', 'time', 'hourglass', 'clock', 'crystal', 'gold', 'coins', 'luxury', 'premium', 'gem', 'diamond', 'jewel', 'wealth', 'money', 'rich', 'value', 'treasure', 'abstract']),
   ];
 
-  /// Models used when no keyword matches (a warm, neutral first choice).
+  /// Models used when no keyword matches. Only warm, metallic, cinematic
+  /// models belong here: they look like motion graphics when blended over a
+  /// video. Toys, animals and furniture are never used as a blind fallback.
   static const List<String> fallbackNames = <String>[
+    'MosquitoInAmber',
     'Lantern',
     'AntiqueCamera',
     'DamagedHelmet',
-    'MosquitoInAmber',
   ];
 
   /// Models whose tags match the keywords, best match first.
