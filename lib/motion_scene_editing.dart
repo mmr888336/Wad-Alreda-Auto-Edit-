@@ -1,11 +1,13 @@
 /// Pure, immutable editing operations for a [MotionSceneDocument]: move a
 /// layer, change its size, trim its in/out points, reorder layers, edit a
-/// word, swap a sprite, add or remove layers. Every operation returns a new
-/// document and leaves the original untouched.
+/// word, swap a sprite, add or remove layers, and set the depth camera of a
+/// scene or the depth of a layer. Every operation returns a new document and
+/// leaves the original untouched.
 library;
 
 import 'dart:math' as math;
 
+import 'depth_camera_model.dart';
 import 'motion_scene_json.dart';
 import 'motion_scene_model.dart';
 import 'pixel_art_sprites.dart';
@@ -37,6 +39,8 @@ class MotionSceneEditing {
     return spec != null && spec.kind == SceneAssetKind.sprite;
   }
 
+  /// Copy of [layer] with some fields replaced. The depth is kept unless a
+  /// new [depth] is given, or [clearDepth] returns it to automatic.
   static MotionLayer copyLayer(
     MotionLayer layer, {
     double? start,
@@ -47,6 +51,8 @@ class MotionSceneEditing {
     int? zIndex,
     String? text,
     List<MotionKeyframe>? keyframes,
+    double? depth,
+    bool clearDepth = false,
   }) {
     return MotionLayer(
       id: layer.id,
@@ -61,6 +67,7 @@ class MotionSceneEditing {
       assetKey: layer.assetKey,
       text: text ?? layer.text,
       keyframes: keyframes ?? layer.keyframes,
+      depth: clearDepth ? null : (depth ?? layer.depth),
     );
   }
 
@@ -89,6 +96,7 @@ class MotionSceneEditing {
         end: scene.end,
         background: scene.background,
         transitionIn: scene.transitionIn,
+        camera: scene.camera,
         layers: <MotionLayer>[
           for (final layer in scene.layers) edit(scene, layer),
         ],
@@ -106,6 +114,41 @@ class MotionSceneEditing {
       (scene, layer) => layer.id == layerId ? edit(scene, layer) : layer,
     );
     return doc.copyWith(project: next);
+  }
+
+  /// Sets the depth camera of the scene [sceneId]. A null camera, or one that
+  /// does nothing (no move or zero intensity), removes the camera.
+  static MotionSceneDocument withCamera(
+    MotionSceneDocument doc,
+    String sceneId,
+    SceneCamera? camera,
+  ) {
+    final clean = camera != null && camera.isActive ? camera : null;
+    final next = mapScenes(
+      doc.project,
+      (scene) => scene.id == sceneId ? scene.withCamera(clean) : scene,
+    );
+    return doc.copyWith(project: next);
+  }
+
+  /// Sets how near the layer [layerId] is to the depth camera (0 far, 1
+  /// near). A null [depth] returns the layer to automatic depth.
+  static MotionSceneDocument withDepth(
+    MotionSceneDocument doc,
+    String layerId,
+    double? depth,
+  ) {
+    final value =
+        depth == null || !depth.isFinite ? null : depth.clamp(0.0, 1.0);
+    return updateLayer(
+      doc,
+      layerId,
+      (scene, layer) => copyLayer(
+        layer,
+        depth: value?.toDouble(),
+        clearDepth: value == null,
+      ),
+    );
   }
 
   /// Moves the whole animation of [layer] by a normalized offset.
@@ -344,6 +387,7 @@ class MotionSceneEditing {
         end: scene.end,
         background: scene.background,
         transitionIn: scene.transitionIn,
+        camera: scene.camera,
         layers: <MotionLayer>[...scene.layers, layer],
       );
     });
@@ -448,6 +492,7 @@ class MotionSceneEditing {
         end: scene.end,
         background: scene.background,
         transitionIn: scene.transitionIn,
+        camera: scene.camera,
         layers: <MotionLayer>[
           for (final layer in scene.layers)
             if (layer.id != layerId) layer,

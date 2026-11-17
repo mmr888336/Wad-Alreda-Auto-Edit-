@@ -11,13 +11,18 @@
 ///    so rotated corners are never cropped or filled with black;
 ///  * layers without a registered asset are skipped and reported;
 ///  * a transition overlaps the end of the previous scene and the start of
-///    the next one, so the total length is the scene sum minus the overlaps.
+///    the next one, so the total length is the scene sum minus the overlaps;
+///  * a scene with an active depth camera (see DepthCameraEngine) has the
+///    camera folded into the position and size expression of every layer,
+///    according to the depth of the layer: parallax, orbit, zoom and
+///    perspective change cost no extra filter and no extra input.
 ///
 /// The plan is returned as an argument list (no shell quoting involved).
 library;
 
 import 'dart:math' as math;
 
+import 'depth_camera_engine.dart';
 import 'motion_scene_model.dart';
 import 'motion_transitions.dart';
 
@@ -210,9 +215,13 @@ class MotionFfmpegAdapter {
     return layer.keyframes.any((k) => k.rotation.abs() > 1e-9);
   }
 
+  /// Builds the FFmpeg plan. Set [depthCamera] to false to render every
+  /// scene flat, ignoring the scene cameras (the renderer uses this as a
+  /// fallback so a camera problem never costs the whole clip).
   static MotionFfmpegPlan build({
     required MotionProject project,
     required Map<String, MotionRenderAsset> assets,
+    bool depthCamera = true,
   }) {
     project.validate();
     if (project.scenes.isEmpty) {
@@ -226,6 +235,7 @@ class MotionFfmpegAdapter {
     for (var si = 0; si < project.scenes.length; si++) {
       final scene = project.scenes[si];
       final dur = scene.duration;
+      final sceneCamera = depthCamera ? scene.camera : null;
       chains.add(
         'color=c=${_color(scene.background)}:'
         's=${project.width}x${project.height}:'
@@ -254,9 +264,26 @@ class MotionFfmpegAdapter {
         final tVar = '(t-${_num(off)})';
         final gVar = '(T-${_num(off)})';
 
-        final xExpr = _prop(layer, (k) => k.x, layer.x, tVar);
-        final yExpr = _prop(layer, (k) => k.y, layer.y, tVar);
-        final sExpr = _prop(layer, (k) => k.scale, layer.scale, tVar);
+        var xExpr = _prop(layer, (k) => k.x, layer.x, tVar);
+        var yExpr = _prop(layer, (k) => k.y, layer.y, tVar);
+        var sExpr = _prop(layer, (k) => k.scale, layer.scale, tVar);
+
+        // Depth camera: fold the scene camera into the layer's own motion.
+        // `t` is the scene-local time, the same clock the layer uses.
+        if (sceneCamera != null && sceneCamera.isActive) {
+          final moved = DepthCameraEngine.expressions(
+            camera: sceneCamera,
+            depth: DepthCameraEngine.depthOf(scene, layer),
+            duration: dur,
+            xExpr: xExpr,
+            yExpr: yExpr,
+            scaleExpr: sExpr,
+            fullBleed: (layer.assetKey ?? '').startsWith('bg:'),
+          );
+          xExpr = moved.x;
+          yExpr = moved.y;
+          sExpr = moved.scale;
+        }
 
         // A rotated layer is drawn on a transparent square whose side is the
         // image diagonal, so the on-screen size is computed from that square.

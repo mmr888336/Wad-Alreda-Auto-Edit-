@@ -1,15 +1,16 @@
 /// Saves and loads an editable motion cutaway.
 ///
 /// A rendered cutaway is only an MP4. Next to it the app keeps a small JSON
-/// file (`<clip>.motion.json`) that describes the scenes, layers, keyframes
-/// and assets, so the layers can be edited later and the clip re-rendered by
-/// the Motion engine.
+/// file (`<clip>.motion.json`) that describes the scenes, layers, keyframes,
+/// depth cameras and assets, so the layers can be edited later and the clip
+/// re-rendered by the Motion engine.
 library;
 
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'depth_camera_model.dart';
 import 'motion_scene_model.dart';
 import 'motion_transitions.dart';
 import 'reference_scene_builder.dart';
@@ -75,31 +76,45 @@ class MotionSceneJson {
         'e': k.easing.name,
       };
 
-  static Map<String, dynamic> _layerToJson(MotionLayer l) =>
+  static Map<String, dynamic> _layerToJson(MotionLayer l) {
+    final depth = l.depth;
+    return <String, dynamic>{
+      'id': l.id,
+      'start': l.start,
+      'end': l.end,
+      'x': l.x,
+      'y': l.y,
+      'scale': l.scale,
+      'rotation': l.rotation,
+      'opacity': l.opacity,
+      'z': l.zIndex,
+      'asset': l.assetKey,
+      'text': l.text,
+      'keys': l.keyframes.map(_keyToJson).toList(),
+      if (depth != null) 'd': depth,
+    };
+  }
+
+  static Map<String, dynamic> _cameraToJson(SceneCamera c) =>
       <String, dynamic>{
-        'id': l.id,
-        'start': l.start,
-        'end': l.end,
-        'x': l.x,
-        'y': l.y,
-        'scale': l.scale,
-        'rotation': l.rotation,
-        'opacity': l.opacity,
-        'z': l.zIndex,
-        'asset': l.assetKey,
-        'text': l.text,
-        'keys': l.keyframes.map(_keyToJson).toList(),
+        'm': c.move.name,
+        'i': c.intensity,
+        'fx': c.focusX,
+        'fy': c.focusY,
       };
 
-  static Map<String, dynamic> _sceneToJson(MotionScene s) =>
-      <String, dynamic>{
-        'id': s.id,
-        'start': s.start,
-        'end': s.end,
-        'bg': s.background,
-        'transition': s.transitionIn.name,
-        'layers': s.layers.map(_layerToJson).toList(),
-      };
+  static Map<String, dynamic> _sceneToJson(MotionScene s) {
+    final camera = s.camera;
+    return <String, dynamic>{
+      'id': s.id,
+      'start': s.start,
+      'end': s.end,
+      'bg': s.background,
+      'transition': s.transitionIn.name,
+      'layers': s.layers.map(_layerToJson).toList(),
+      if (camera != null) 'cam': _cameraToJson(camera),
+    };
+  }
 
   static Map<String, dynamic> _projectToJson(MotionProject p) =>
       <String, dynamic>{
@@ -178,6 +193,7 @@ class MotionSceneJson {
     final id = j['id'];
     final asset = j['asset'];
     final text = j['text'];
+    final depth = j['d'];
     return MotionLayer(
       id: id is String ? id : '',
       start: _num(j['start'], 0),
@@ -191,6 +207,26 @@ class MotionSceneJson {
       assetKey: asset is String ? asset : null,
       text: text is String ? text : null,
       keyframes: keys,
+      depth: depth is num && depth.isFinite
+          ? depth.toDouble().clamp(0.0, 1.0).toDouble()
+          : null,
+    );
+  }
+
+  /// A camera stored by this version, or null when there is none (clips made
+  /// by older versions) or when it does nothing.
+  static SceneCamera? _cameraFromJson(Object? value) {
+    if (value is! Map) return null;
+    final j = Map<String, dynamic>.from(value);
+    final move = _enum(DepthCameraMove.values, j['m'], DepthCameraMove.none);
+    if (move == DepthCameraMove.none) return null;
+    return SceneCamera(
+      move: move,
+      intensity: _num(j['i'], 0.8)
+          .clamp(0.0, SceneCamera.maxIntensity)
+          .toDouble(),
+      focusX: _num(j['fx'], 0.5).clamp(0.0, 1.0).toDouble(),
+      focusY: _num(j['fy'], 0.42).clamp(0.0, 1.0).toDouble(),
     );
   }
 
@@ -212,6 +248,7 @@ class MotionSceneJson {
         MotionTransitionKind.hardCut,
       ),
       layers: layers,
+      camera: _cameraFromJson(j['cam']),
     );
   }
 

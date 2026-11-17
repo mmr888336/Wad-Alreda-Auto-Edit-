@@ -1,5 +1,6 @@
 /// Renderer-neutral motion scene model: layers with local-time keyframes,
-/// scenes with a background and an entry transition, and a validated project.
+/// scenes with a background, an entry transition and an optional depth
+/// camera, and a validated project.
 ///
 /// All positions are normalized to the canvas (0..1). Keyframe times are
 /// local to their layer (seconds from the layer start), matching the Motion
@@ -8,6 +9,7 @@ library;
 
 import 'dart:math' as math;
 
+import 'depth_camera_model.dart';
 import 'motion_transitions.dart';
 
 enum MotionEase { linear, easeOut, easeInOut, overshoot }
@@ -89,6 +91,11 @@ class MotionLayer {
   final String? text;
   final List<MotionKeyframe> keyframes;
 
+  /// Distance from the depth camera, 0 (far background) to 1 (nearest
+  /// foreground). Null means automatic: it follows the asset key and the
+  /// stacking order (see DepthCameraEngine.depthOf).
+  final double? depth;
+
   const MotionLayer({
     required this.id,
     required this.start,
@@ -102,6 +109,7 @@ class MotionLayer {
     this.assetKey,
     this.text,
     this.keyframes = const <MotionKeyframe>[],
+    this.depth,
   });
 
   double get duration => end - start;
@@ -166,6 +174,10 @@ class MotionScene {
   final MotionTransitionKind transitionIn;
   final List<MotionLayer> layers;
 
+  /// Virtual depth camera of the scene. Null (or an inactive camera) leaves
+  /// every layer exactly where its keyframes put it.
+  final SceneCamera? camera;
+
   const MotionScene({
     required this.id,
     required this.start,
@@ -173,11 +185,25 @@ class MotionScene {
     required this.layers,
     this.background = '#000000',
     this.transitionIn = MotionTransitionKind.hardCut,
+    this.camera,
   });
 
   double get duration => end - start;
 
   bool isActiveAt(double seconds) => seconds >= start && seconds < end;
+
+  /// Same scene with [next] as its camera (null removes the camera).
+  MotionScene withCamera(SceneCamera? next) {
+    return MotionScene(
+      id: id,
+      start: start,
+      end: end,
+      layers: layers,
+      background: background,
+      transitionIn: transitionIn,
+      camera: next,
+    );
+  }
 }
 
 class MotionProject {
