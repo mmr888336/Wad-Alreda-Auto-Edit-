@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   tearDown(() {
     KeywordCalloutPlanner.enabled = true;
+    KeywordCalloutPlanner.drawOverSpeaker = false;
   });
 
   group('KeywordCalloutPlanner.bestWord', () {
@@ -100,6 +101,21 @@ void main() {
         KeywordCalloutPlanner.plan(captions: captions(), duration: 26),
         isEmpty,
       );
+    });
+  });
+
+  group('KeywordCalloutPlanner export switch', () {
+    test('exported videos draw no callout over the speaker by default', () {
+      expect(KeywordCalloutPlanner.drawOverSpeaker, isFalse);
+      expect(KeywordCalloutPlanner.enabled, isFalse);
+    });
+
+    test('switching it on restores the callouts; the planner switch still wins', () {
+      KeywordCalloutPlanner.drawOverSpeaker = true;
+      expect(KeywordCalloutPlanner.enabled, isTrue);
+
+      KeywordCalloutPlanner.enabled = false;
+      expect(KeywordCalloutPlanner.enabled, isFalse);
     });
   });
 
