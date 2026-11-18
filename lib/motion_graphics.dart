@@ -21,6 +21,13 @@ class MotionGraphicsPlan {
   /// 1-2 second cutaway. Motion Smith style cuts last 0.1-0.3 seconds.
   static const double maxBrollFadeSeconds = 0.16;
 
+  /// One warm red/amber grade for stock footage, so a stock clip sits in the
+  /// same colour family as the motion cutaways (near-black, brown, crimson,
+  /// amber). It only changes the colour channels; alpha is never touched, so
+  /// the cut in/out stays exact.
+  static const String unifiedGradeFilter =
+      'format=rgba,colorchannelmixer=rr=1.04:gg=0.92:bb=0.80';
+
   const MotionGraphicsPlan({
     required this.mood,
     required this.label,
@@ -197,11 +204,16 @@ class MotionGraphicsPlan {
   }
 
   /// B-roll uses a slower camera path than the foreground text layer.
+  ///
+  /// With [unifiedGrade] the clip gets [unifiedGradeFilter] as its last stage
+  /// (used for stock footage; motion cutaways are already graded). It is off
+  /// by default, so the filter is unchanged for every existing caller.
   String brollInputFilter({
     required int width,
     required int height,
     required double start,
     required double end,
+    bool unifiedGrade = false,
   }) {
     final duration = (end - start).clamp(0.12, 600.0).toDouble();
 
@@ -232,6 +244,7 @@ class MotionGraphicsPlan {
       'fade=t=in:st=0:d=${_n(fade)}:alpha=1',
       'fade=t=out:st=${_n(fadeOutStart)}:d=${_n(fade)}:alpha=1',
       camera,
+      if (unifiedGrade) unifiedGradeFilter,
       'setpts=PTS+${_n(start)}/TB',
     ].join(',');
   }
