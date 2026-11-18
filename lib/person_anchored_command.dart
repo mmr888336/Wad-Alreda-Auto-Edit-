@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'person_anchor_path.dart';
 import 'person_silhouette.dart';
+import 'scene_environment.dart';
 
 /// One 3D scene clip and how it is placed on the video.
 ///
@@ -14,6 +15,11 @@ class AnchoredSceneSpec {
   final PersonMatteSequence? matte;
   final List<String> keyColors;
 
+  /// How the card is matched to the light, color and depth of the place it
+  /// stands in (grade, haze, soft focus, grain and a cast shadow). Null keeps
+  /// the plain anchored look.
+  final SceneEnvironmentLook? environment;
+
   const AnchoredSceneSpec({
     required this.scenePath,
     required this.start,
@@ -21,6 +27,7 @@ class AnchoredSceneSpec {
     this.path,
     this.matte,
     this.keyColors = const <String>[],
+    this.environment,
   });
 
   bool get isAnchored => path != null;
@@ -29,6 +36,19 @@ class AnchoredSceneSpec {
     final p = path;
     return p != null && matte != null && p.placement.occludedByPerson;
   }
+
+  /// Only anchored cards are matched to their environment.
+  bool get hasEnvironment => path != null && environment != null;
+
+  /// The same scene without the environment match (used as a safe retry).
+  AnchoredSceneSpec withoutEnvironment() => AnchoredSceneSpec(
+        scenePath: scenePath,
+        start: start,
+        end: end,
+        path: path,
+        matte: matte,
+        keyColors: keyColors,
+      );
 }
 
 /// Builds the FFmpeg command that places 3D scenes next to the tracked person.
@@ -38,6 +58,64 @@ class PersonAnchoredCommand {
   static String _f(double value) => value.toStringAsFixed(3);
 
   static int _even(int value) => value.isEven ? value : value - 1;
+
+  /// Adds the environment match of one anchored card to [chains]:
+  /// grade + haze + soft focus (+ grain on the color only, never on the alpha)
+  /// and a soft cast shadow drawn under the card. Returns the label of the
+  /// video that already holds the shadow; the card itself is left in [card].
+  static String _addEnvironment({
+    required List<String> chains,
+    required int index,
+    required String source,
+    required String card,
+    required String current,
+    required PersonAnchorPath path,
+    required SceneEnvironmentLook environment,
+    required String start,
+    required String end,
+  }) {
+    final colorLabel = 'envc$index';
+    final alphaLabel = 'enva$index';
+    final shadowSource = 'envs$index';
+    final maskLabel = 'envm$index';
+    final grainLabel = 'envn$index';
+    final shadowLabel = 'shadow$index';
+    final shadowOut = 'pshadow$index';
+
+    if (environment.hasGrain) {
+      // The grain is added to the color only; the alpha (the card shape)
+      // travels separately and is merged back, so it never gets speckled.
+      chains.add(
+        '[$source]${environment.gradeChain},'
+        'split=3[$colorLabel][$alphaLabel][$shadowSource]',
+      );
+      chains.add('[$alphaLabel]alphaextract[$maskLabel]');
+      chains.add(
+        '[$colorLabel]format=yuv444p,'
+        'noise=alls=${environment.grain}:allf=t+u[$grainLabel]',
+      );
+      chains.add(
+        '[$grainLabel][$maskLabel]alphamerge,format=rgba[$card]',
+      );
+    } else {
+      chains.add(
+        '[$source]${environment.gradeChain},'
+        'split=2[$card][$shadowSource]',
+      );
+    }
+
+    chains.add('[$shadowSource]${environment.shadowChain}[$shadowLabel]');
+
+    chains.add(
+      "[$current][$shadowLabel]overlay="
+      "x='(${path.xExpression()})+(${_f(environment.shadowDx)})':"
+      "y='(${path.yExpression()})+(${_f(environment.shadowDy)})':"
+      "eof_action=pass:repeatlast=0:enable='between(t,$start,$end)'"
+      '[$shadowOut]',
+    );
+
+    return shadowOut;
+  }
 
   static String build({
     required String videoPath,
@@ -115,6 +193,12 @@ class PersonAnchoredCommand {
       final keyChain = keys.isEmpty ? '' : '$keys,';
       final fadeOut = _f(math.max(spec.start, spec.end - 0.2));
 
+      final environment = spec.environment;
+
+      // With an environment match the keyed card first goes to "raw", then
+      // through the grade / shadow chains, and ends up in "card".
+      final cardSource = environment == null ? card : 'raw$i';
+
       chains.add(
         '[$sceneIndex:v]setpts=PTS-STARTPTS+$start/TB,'
         'scale=$side:$side:force_original_aspect_ratio=decrease:flags=lanczos,'
@@ -122,8 +206,22 @@ class PersonAnchoredCommand {
         'setsar=1,format=rgba,'
         '${keyChain}fade=t=in:st=$start:d=0.200:alpha=1,'
         'fade=t=out:st=$fadeOut:d=0.200:alpha=1'
-        '[$card]',
+        '[$cardSource]',
       );
+
+      if (environment != null) {
+        current = _addEnvironment(
+          chains: chains,
+          index: i,
+          source: cardSource,
+          card: card,
+          current: current,
+          path: p,
+          environment: environment,
+          start: start,
+          end: end,
+        );
+      }
 
       chains.add(
         "[$current][$card]overlay=x='${p.xExpression()}':y='${p.yExpression()}':"
