@@ -4,10 +4,11 @@
 /// scene is a composition of layers: a pixel-grid background, one main
 /// sprite chosen from the MEANING of the words, a small orbiting decor
 /// sprite, an optional transparent VFX overlay (smoke, dust, bokeh, light
-/// leak...) and up to three words that enter one by one with their own
-/// timing, rotation and overshoot. Scenes are joined with the transition
-/// library. The result is a renderer-neutral [MotionProject] plus the list of
-/// assets the renderer has to create. Pure Dart, no I/O.
+/// leak...) and ONE impact word that enters with its own timing, rotation and
+/// overshoot. Scenes are joined with a short transition (0.35 seconds at most,
+/// like the 0.1-0.3 second cuts of the reference). The result is a
+/// renderer-neutral [MotionProject] plus the list of assets the renderer has
+/// to create. Pure Dart, no I/O.
 ///
 /// The main sprite is a pixel-art sprite whenever a word of the phrase has a
 /// pixel meaning (the existing behaviour). Otherwise the semantic visual
@@ -127,6 +128,14 @@ class ReferenceSceneBuilder {
 
   /// Cutaways may cover at most this share of the video.
   static const double maxCoverage = 0.25;
+
+  /// Words shown per scene: one strong impact word. The captions already show
+  /// the sentence, so a stack of three words repeated it a second time.
+  static const int maxWordsPerScene = 1;
+
+  /// Longest transition between the two scenes of a cutaway, in seconds
+  /// (the reference cuts last 0.1-0.3 seconds).
+  static const double maxTransitionSeconds = 0.35;
 
   /// The one recurring character of the video (orange cube robot).
   static const String mascotSprite = 'pixel_orange_mascot';
@@ -375,22 +384,23 @@ class ReferenceSceneBuilder {
     return <String>[for (final i in keep) all[i]];
   }
 
+  /// The transition joining two scenes. Only short kinds (at most
+  /// [maxTransitionSeconds]) are used: the reference cuts are 0.1-0.3 seconds
+  /// and a long dissolve or wipe leaves two pictures on screen together.
   static MotionTransitionKind _transitionFor(MotionMood mood, int variant) {
     const dynamicKinds = <MotionTransitionKind>[
-      MotionTransitionKind.pixelBlockWipe,
       MotionTransitionKind.glitchSlice,
       MotionTransitionKind.zoomSmash,
-      MotionTransitionKind.rgbSplit,
+      MotionTransitionKind.redFlash,
     ];
     const calmKinds = <MotionTransitionKind>[
-      MotionTransitionKind.blurDissolve,
-      MotionTransitionKind.lightLeak,
       MotionTransitionKind.matchCut,
+      MotionTransitionKind.redFlash,
     ];
     const cinematicKinds = <MotionTransitionKind>[
-      MotionTransitionKind.whipPan,
       MotionTransitionKind.redFlash,
-      MotionTransitionKind.blurDissolve,
+      MotionTransitionKind.matchCut,
+      MotionTransitionKind.zoomSmash,
     ];
     final kinds = switch (mood) {
       MotionMood.calm => calmKinds,
@@ -399,6 +409,10 @@ class ReferenceSceneBuilder {
     };
     return kinds[variant.abs() % kinds.length];
   }
+
+  /// The transition kind used for a [mood] and [variant] (test hook).
+  static MotionTransitionKind transitionKindFor(MotionMood mood, int variant) =>
+      _transitionFor(mood, variant);
 
   static String _hex(int argb) =>
       '#${(argb & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
@@ -609,7 +623,7 @@ class ReferenceSceneBuilder {
 
       final from = math.min(words.length, si * perScene);
       final to = math.min(words.length, from + perScene);
-      final sceneWords = _pickWords(words.sublist(from, to), 3);
+      final sceneWords = _pickWords(words.sublist(from, to), maxWordsPerScene);
       final sceneText = sceneWords.join(' ');
 
       // A pixel sprite that matches the words always wins (existing look).
