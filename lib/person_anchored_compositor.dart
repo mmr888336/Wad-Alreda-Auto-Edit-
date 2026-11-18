@@ -10,6 +10,8 @@ import 'person_matte_renderer.dart';
 import 'person_segmentation_matte.dart';
 import 'person_silhouette.dart';
 import 'person_tracking_models.dart';
+import 'scene_environment.dart';
+import 'scene_environment_sampler.dart';
 import 'scene_key_color.dart';
 import 'silence_cutter.dart';
 
@@ -17,12 +19,17 @@ class PersonAnchoredResult {
   final String path;
   final int anchoredScenes;
   final int pipScenes;
+
+  /// Anchored scenes that were also matched to the light, color and depth of
+  /// the place (grade, haze, soft focus, grain and a cast shadow).
+  final int environmentScenes;
   final List<String> notes;
 
   const PersonAnchoredResult({
     required this.path,
     required this.anchoredScenes,
     required this.pipScenes,
+    this.environmentScenes = 0,
     this.notes = const <String>[],
   });
 }
@@ -36,9 +43,21 @@ class PersonAnchoredResult {
 /// person for every sampled frame). When segmentation is not possible the
 /// approximate pose-based matte is used instead.
 ///
+/// Phase 3 (environment): every anchored card is also matched to the place it
+/// stands in. The light, color cast, softness and light direction of the real
+/// footage are measured during the scene, and the card gets the same
+/// exposure and color cast, distance haze and soft focus by depth, the grain
+/// of the camera and a soft shadow that falls away from the light. If that
+/// richer composite cannot be encoded, the plain anchored composite is encoded
+/// instead, so the environment match can never cost the export.
+///
 /// A scene whose person path cannot be planned keeps the old panel.
 class PersonAnchoredCompositor {
   PersonAnchoredCompositor._();
+
+  /// Phase 3 switch: match anchored cards to the light, color and depth of
+  /// the footage. Any failure falls back to the plain anchored look.
+  static bool environmentIntegrationEnabled = true;
 
   static Future<PersonAnchoredResult> composite({
     required String videoPath,
@@ -103,6 +122,7 @@ class PersonAnchoredCompositor {
     final specs = <AnchoredSceneSpec>[];
     var anchored = 0;
     var pip = 0;
+    var environmentScenes = 0;
 
     try {
       for (var i = 0; i < valid.length; i++) {
@@ -185,6 +205,33 @@ class PersonAnchoredCompositor {
           }
         }
 
+        // Phase 3: read the light and color of the place during this scene.
+        // Any problem here only means this scene keeps the plain look.
+        SceneEnvironmentLook? environment;
+        if (environmentIntegrationEnabled) {
+          try {
+            onStatus?.call('جاري قراءة ضوء ولون المكان للمشهد ${i + 1}...');
+
+            final profile = await SceneEnvironmentSampler.sample(
+              videoPath: videoPath,
+              start: scene.start,
+              end: scene.end,
+              directory: '${workDir.path}/env_$i',
+            );
+
+            if (profile != null) {
+              environment = SceneEnvironmentLook.plan(
+                profile: profile,
+                placement: path.placement,
+                sidePixels: path.sidePixels,
+              );
+              environmentScenes++;
+            }
+          } catch (_) {
+            environment = null;
+          }
+        }
+
         anchored++;
         specs.add(
           AnchoredSceneSpec(
@@ -194,6 +241,7 @@ class PersonAnchoredCompositor {
             path: path,
             matte: matte,
             keyColors: keyColors,
+            environment: environment,
           ),
         );
       }
@@ -207,35 +255,77 @@ class PersonAnchoredCompositor {
         );
       }
 
-      final command = PersonAnchoredCommand.build(
-        videoPath: videoPath,
-        outputPath: outputPath,
-        width: width,
-        height: height,
-        duration: duration,
-        scenes: specs,
-        maximumQuality: maximumQuality,
-      );
+      Future<bool> encode(List<AnchoredSceneSpec> list) async {
+        final command = PersonAnchoredCommand.build(
+          videoPath: videoPath,
+          outputPath: outputPath,
+          width: width,
+          height: height,
+          duration: duration,
+          scenes: list,
+          maximumQuality: maximumQuality,
+        );
+
+        final encoded =
+            await SilenceCutter.encode(command, duration, onProgress);
+
+        final outputFile = File(outputPath);
+
+        if (encoded &&
+            await outputFile.exists() &&
+            await outputFile.length() >= 4096) {
+          return true;
+        }
+
+        try {
+          if (await outputFile.exists()) await outputFile.delete();
+        } catch (_) {}
+
+        return false;
+      }
 
       onStatus?.call(
         'جاري دمج $anchored مشاهد 3D مرتبطة بالشخص مع الفيديو...',
       );
 
-      final encoded =
-          await SilenceCutter.encode(command, duration, onProgress);
+      var encodedOk = false;
+      var environmentApplied = 0;
 
-      final outputFile = File(outputPath);
-
-      if (!encoded ||
-          !await outputFile.exists() ||
-          await outputFile.length() < 4096) {
+      if (environmentScenes > 0) {
         try {
-          if (await outputFile.exists()) await outputFile.delete();
-        } catch (_) {}
+          encodedOk = await encode(specs);
+          if (encodedOk) environmentApplied = environmentScenes;
+        } catch (_) {
+          encodedOk = false;
+        }
 
+        if (!encodedOk) {
+          notes.add(
+            'تعذر دمج ضوء ولون وعمق المكان مع المجسمات؛ '
+            'استُخدم الربط العادي بالشخص.',
+          );
+        }
+      }
+
+      if (!encodedOk) {
+        // Plain anchored composite: exactly the previous behaviour.
+        encodedOk = await encode(
+          <AnchoredSceneSpec>[
+            for (final spec in specs) spec.withoutEnvironment(),
+          ],
+        );
+      }
+
+      if (!encodedOk) {
         throw FileSystemException(
           'فشل دمج مشاهد 3D المرتبطة بالشخص.',
           outputPath,
+        );
+      }
+
+      if (environmentApplied > 0) {
+        notes.add(
+          'تم دمج ضوء ولون وعمق وظل المكان مع $environmentApplied مشهد 3D.',
         );
       }
 
@@ -243,6 +333,7 @@ class PersonAnchoredCompositor {
         path: outputPath,
         anchoredScenes: anchored,
         pipScenes: math.max(0, pip),
+        environmentScenes: environmentApplied,
         notes: notes,
       );
     } finally {
