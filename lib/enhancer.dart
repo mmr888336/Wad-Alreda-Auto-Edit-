@@ -1046,7 +1046,11 @@ class Enhancer {
       for (final layer in brollLayers) {
         final idx = inputs.length;
         inputs.add('-i "${layer.sourcePath}"');
-        chains.add('[$idx:v]${motionPlan.brollInputFilter(width: outW, height: outH, start: layer.start, end: layer.end)}[bv$idx]');
+        // Stock footage gets the one warm red/amber grade so it sits in the
+        // same colour family as the motion cutaways (which are already
+        // graded). The grade is skipped in the fallback export (visFx false).
+        final isMotionClip = layer.sourcePath!.contains('motion_scene_');
+        chains.add('[$idx:v]${motionPlan.brollInputFilter(width: outW, height: outH, start: layer.start, end: layer.end, unifiedGrade: visFx && !isMotionClip)}[bv$idx]');
         final o = next();
         chains.add("[$cur][bv$idx]overlay=x=0:y=0:enable='between(t,${_f(layer.start)},${_f(layer.end)})'[$o]");
         cur = o;
