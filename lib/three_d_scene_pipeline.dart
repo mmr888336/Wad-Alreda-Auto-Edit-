@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'package:filament_renderer/filament_renderer.dart';
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
+import 'cue_windows.dart';
 import 'filament_scene_exporter.dart';
 import 'khronos_model_catalog.dart';
 import 'person_anchored_compositor.dart';
@@ -267,6 +268,32 @@ class ThreeDScenePipeline {
     }
 
     flushGroup();
+
+    // A 3D scene over full-screen B-roll hides the picture and ends up as a
+    // small card on top of it: keep the scenes where the speaker is on screen.
+    final broll = <TimeWindow>[
+      for (final layer in project.layersOfType(TimelineLayerType.broll))
+        if (layer.visible && layer.end > layer.start)
+          (start: layer.start, end: layer.end),
+    ];
+    if (broll.isNotEmpty) {
+      final free = <_ThreeDCue>[];
+      for (final cue in cues) {
+        final part = CueWindows.longestFreePart(
+          start: cue.start,
+          end: cue.end,
+          blocked: broll,
+        );
+        if (part != null) {
+          free.add(
+            _ThreeDCue(start: part.start, end: part.end, query: cue.query),
+          );
+        }
+      }
+      cues
+        ..clear()
+        ..addAll(free);
+    }
 
     if (cues.length <= _maximumScenesPerExport) {
       return cues;
