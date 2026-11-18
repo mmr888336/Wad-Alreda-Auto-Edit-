@@ -35,6 +35,18 @@ class PersonAnchorPath {
   /// Minimum share of the scene where the person must be visible.
   static const double minimumCoverage = 0.6;
 
+  /// Free space kept between a card and the head, as a share of the shorter
+  /// frame edge.
+  static const double headClearance = 0.015;
+
+  /// A card that cannot keep clear of the head is shrunk by this factor, up to
+  /// [maximumShrinkSteps] times, before the plan is given up (null).
+  static const double shrinkFactor = 0.8;
+  static const int maximumShrinkSteps = 4;
+
+  /// Smallest card side (share of the shorter frame edge) worth showing.
+  static const double minimumSideFraction = 0.12;
+
   final PersonPlacement placement;
   final double start;
   final double end;
@@ -145,9 +157,8 @@ class PersonAnchorPath {
       for (final sample in samples)
         if (sample != null) _sidePixels(sample, placement, w, h),
     ]..sort();
-    final sideFraction =
+    var sideFraction =
         (sides[sides.length ~/ 2] / shortEdge).clamp(0.12, 0.6).toDouble();
-    final side = sideFraction * shortEdge;
 
     // Put the card on the side of the person that has more free room.
     var direction = 1.0;
@@ -158,20 +169,40 @@ class PersonAnchorPath {
       }
     }
 
-    final xs = List<double?>.filled(samples.length, null);
-    final ys = List<double?>.filled(samples.length, null);
-    for (var i = 0; i < samples.length; i++) {
-      final sample = samples[i];
-      if (sample == null) continue;
-      final target = _target(sample, placement, direction, w, h, side);
-      xs[i] = target.x;
-      ys[i] = target.y;
-    }
-    _fillGaps(xs);
-    _fillGaps(ys);
+    // A card that is not hidden behind the person must never cover the face:
+    // if it cannot be placed clear of the head, it is made smaller, and if it
+    // still cannot, there is no plan (the caller keeps the plain scene).
+    late List<double> smoothX;
+    late List<double> smoothY;
+    var shrinkSteps = 0;
+    while (true) {
+      final side = sideFraction * shortEdge;
+      final xs = List<double?>.filled(samples.length, null);
+      final ys = List<double?>.filled(samples.length, null);
+      for (var i = 0; i < samples.length; i++) {
+        final sample = samples[i];
+        if (sample == null) continue;
+        final target = _target(sample, placement, direction, w, h, side);
+        xs[i] = target.x;
+        ys[i] = target.y;
+      }
+      _fillGaps(xs);
+      _fillGaps(ys);
 
-    final smoothX = _smooth(<double>[for (final v in xs) v!]);
-    final smoothY = _smooth(<double>[for (final v in ys) v!]);
+      smoothX = _smooth(<double>[for (final v in xs) v!]);
+      smoothY = _smooth(<double>[for (final v in ys) v!]);
+
+      if (placement.occludedByPerson ||
+          !_coversHead(samples, smoothX, smoothY, w, h, side)) {
+        break;
+      }
+      final smaller = sideFraction * shrinkFactor;
+      if (shrinkSteps >= maximumShrinkSteps || smaller < minimumSideFraction) {
+        return null;
+      }
+      shrinkSteps++;
+      sideFraction = smaller;
+    }
 
     return PersonAnchorPath(
       placement: placement,
@@ -279,10 +310,104 @@ class PersonAnchorPath {
     final raw = _rawTarget(o, placement, direction, w, h, side);
     final half = side / 2;
     final margin = math.min(w, h) * 0.02;
-    return math.Point<double>(
+    final inFrame = math.Point<double>(
       _clamp(raw.x, half + margin, w - half - margin),
       _clamp(raw.y, half + margin, h - half - margin),
     );
+    if (placement.occludedByPerson) return inFrame;
+    return _clearOfHead(o, inFrame, direction, w, h, side);
+  }
+
+  /// Half sizes (pixels) of the area around the head that a card must not
+  /// touch, for a card of [side] pixels (the card's own half side included).
+  static math.Point<double> _headReach(
+    PersonObservation o,
+    double w,
+    double h,
+    double side,
+  ) {
+    final shoulder = _shoulderPixels(o, w, h);
+    final gap = math.min(w, h) * headClearance;
+    return math.Point<double>(
+      shoulder * 0.28 + side / 2 + gap,
+      shoulder * 0.4 + side / 2 + gap,
+    );
+  }
+
+  static bool _hitsHead(
+    PersonObservation o,
+    math.Point<double> center,
+    double w,
+    double h,
+    double side,
+  ) {
+    final head = o.anchor(PersonAnchor.head);
+    if (head == null) return false;
+    final reach = _headReach(o, w, h, side);
+    return (center.x - head.x * w).abs() < reach.x &&
+        (center.y - head.y * h).abs() < reach.y;
+  }
+
+  /// True when the smoothed card path covers the head at any sample.
+  static bool _coversHead(
+    List<PersonObservation?> samples,
+    List<double> xs,
+    List<double> ys,
+    double w,
+    double h,
+    double side,
+  ) {
+    for (var i = 0; i < samples.length; i++) {
+      final sample = samples[i];
+      if (sample == null) continue;
+      final center = math.Point<double>(xs[i], ys[i]);
+      if (_hitsHead(sample, center, w, h, side)) return true;
+    }
+    return false;
+  }
+
+  /// Moves a card center that would cover the head to the nearest spot beside,
+  /// above or below the head that is still inside the frame. When there is no
+  /// such spot the point is returned unchanged (the caller shrinks the card).
+  static math.Point<double> _clearOfHead(
+    PersonObservation o,
+    math.Point<double> point,
+    double direction,
+    double w,
+    double h,
+    double side,
+  ) {
+    final head = o.anchor(PersonAnchor.head);
+    if (head == null || !_hitsHead(o, point, w, h, side)) return point;
+
+    final half = side / 2;
+    final margin = math.min(w, h) * 0.02;
+    final reach = _headReach(o, w, h, side);
+    final hx = head.x * w;
+    final hy = head.y * h;
+
+    math.Point<double> fit(double x, double y) => math.Point<double>(
+          _clamp(x, half + margin, w - half - margin),
+          _clamp(y, half + margin, h - half - margin),
+        );
+
+    final options = <math.Point<double>>[
+      fit(hx + direction * reach.x, point.y),
+      fit(hx - direction * reach.x, point.y),
+      fit(point.x, hy - reach.y),
+      fit(point.x, hy + reach.y),
+    ]..sort((a, b) => _distance(a, point).compareTo(_distance(b, point)));
+
+    for (final option in options) {
+      if (!_hitsHead(o, option, w, h, side)) return option;
+    }
+    return point;
+  }
+
+  static double _distance(math.Point<double> a, math.Point<double> b) {
+    final dx = a.x - b.x;
+    final dy = a.y - b.y;
+    return math.sqrt(dx * dx + dy * dy);
   }
 
   static double _clamp(double value, double low, double high) {
