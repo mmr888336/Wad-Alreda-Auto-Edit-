@@ -372,7 +372,7 @@ class MotionVisualLibrary {
         poly(star(.72,.64,.08,.034),gold);
       }
       case 'prayer_beads':{
-        for(var i=0;i<24;i++){final t=i*math.pi*2/24+math.pi/2;ball(.5+math.cos(t)*.26,.46+math.sin(t)*.26,i%6==0?.04:.032,i%6==0?gold:mix(col,paper,i.isEven?.0:.2));}
+        for(var i=0;i<24;i++){final t=i*math.pi*2/24+math.pi/2;ball(.5+math.cos(t)*.26,.46+math.sin(t)*.26,i%6==0 ? 0.04 : 0.032,i%6==0 ? gold : mix(col,paper,i.isEven ? 0.0 : 0.2));}
         ball(.5,.76,.045,gold);line(.5,.79,.5,.88,gold,.014);ball(.5,.90,.022,gold);
       }
       case 'briefcase':{
@@ -382,7 +382,7 @@ class MotionVisualLibrary {
         slab(.45,.52,.10,.09,gold,rad:.012);
       }
       case 'store':{
-        for(var i=0;i<6;i++){final x=.14+i*.12;poly(pg([x,.30,x+.12,.30,x+.13,.44,x-.01,.44]),i.isEven?col:paper,hi:.2,lo:.25);}
+        for(var i=0;i<6;i++){final x=.14+i*.12;poly(pg([x,.30,x+.12,.30,x+.13,.44,x-.01,.44]),i.isEven ? col : paper,hi:.2,lo:.25);}
         slab(.18,.44,.64,.38,mix(col,paper,.55),rad:.01);
         slab(.24,.52,.26,.18,sky,rad:.012);slab(.58,.52,.16,.30,dim(col,.3),rad:.012);
         ball(.70,.68,.014,gold);
@@ -407,7 +407,7 @@ class MotionVisualLibrary {
         line(.14,.46,.58,.46,dim(col,.4),.01);
       }
       case 'growth':{
-        for(var i=0;i<5;i++){final h=.14+i*.1;slab(.16+i*.14,.80-h,.10,h,i==4?green:mix(col,paper,.2),rad:.015);}
+        for(var i=0;i<5;i++){final h=.14+i*.1;slab(.16+i*.14,.80-h,.10,h,i==4 ? green : mix(col,paper,.2),rad:.015);}
         stroke(ui.Path()..moveTo(s*.16,s*.60)..lineTo(s*.38,s*.46)..lineTo(s*.52,s*.54)..lineTo(s*.80,s*.26),paper,.028);
         poly(pg([.88,.20,.72,.24,.84,.36]),paper);
       }
@@ -421,7 +421,7 @@ class MotionVisualLibrary {
       case 'laptop':{
         slab(.18,.26,.64,.42,ink,rad:.03);
         slab(.21,.29,.58,.36,col,rad:.015);
-        for(var i=0;i<4;i++){line(.26,.35+i*.065,.26+(i.isEven?.30:.20),.35+i*.065,paper,.012);}
+        for(var i=0;i<4;i++){line(.26,.35+i*.065,.26+(i.isEven ? 0.30 : 0.20),.35+i*.065,paper,.012);}
         poly(pg([.10,.70,.90,.70,.96,.78,.04,.78]),steel);
         line(.44,.74,.56,.74,dim(steel,.3),.01);
       }
@@ -614,7 +614,7 @@ class MotionVisualLibrary {
         slab(.14,.20,.52,.34,col,rad:.08);poly(pg([.26,.54,.24,.68,.40,.54]),col);
         slab(.34,.42,.52,.34,mix(col,paper,.7),rad:.08);poly(pg([.74,.76,.78,.88,.62,.76]),mix(col,paper,.7));
         for(var i=0;i<3;i++){ball(.46+i*.12,.59,.024,col);}
-        for(var i=0;i<3;i++){line(.24,.30+i*.06,.24+(i==2?.14:.28),.30+i*.06,paper,.012);}
+        for(var i=0;i<3;i++){line(.24,.30+i*.06,.24+(i==2 ? 0.14 : 0.28),.30+i*.06,paper,.012);}
       }
       case 'lock':{
         stroke(ui.Path()..moveTo(s*.36,s*.46)..lineTo(s*.36,s*.34)..cubicTo(s*.36,s*.12,s*.64,s*.12,s*.64,s*.34)..lineTo(s*.64,s*.46),steel,.05);
@@ -637,7 +637,7 @@ class MotionVisualLibrary {
         slab(.18,.22,.64,.58,paper,rad:.05);
         slab(.18,.22,.64,.16,col,rad:.05);slab(.18,.30,.64,.08,col,rad:.0);
         slab(.30,.16,.04,.12,steel,rad:.01);slab(.66,.16,.04,.12,steel,rad:.01);
-        for(var r=0;r<3;r++){for(var k=0;k<4;k++){slab(.26+k*.14,.46+r*.1,.08,.06,(r==1&&k==2)?col:mix(steel,paper,.3),rad:.01);}}
+        for(var r=0;r<3;r++){for(var k=0;k<4;k++){slab(.26+k*.14,.46+r*.1,.08,.06,(r==1&&k==2) ? col : mix(steel,paper,.3),rad:.01);}}
       }
       case 'car':{
         poly(pg([.08,.64,.08,.52,.26,.46,.34,.34,.64,.34,.74,.46,.92,.50,.92,.64]),col);
@@ -672,7 +672,7 @@ class MotionVisualLibrary {
       case 'chart_bars':{
         line(.2,.22,.2,.80,const ui.Color(0x88FFFFFF),.015);line(.2,.80,.84,.80,const ui.Color(0x88FFFFFF),.015);
         const hs=<double>[.22,.34,.26,.44];
-        for(var i=0;i<4;i++){slab(.28+i*.14,.80-hs[i],.10,hs[i],i==3?green:mix(col,paper,i.isEven?.0:.2),rad:.012);}
+        for(var i=0;i<4;i++){slab(.28+i*.14,.80-hs[i],.10,hs[i],i==3 ? green : mix(col,paper,i.isEven ? 0.0 : 0.2),rad:.012);}
       }
       case 'question':{
         ball(.5,.5,.30,col);txt('?',.5,.50,.44,paper);
