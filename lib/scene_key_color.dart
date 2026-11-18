@@ -5,6 +5,8 @@ import 'dart:ui' as ui;
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 
+import 'scene_key_quality.dart';
+
 class _ColorCluster {
   int red;
   int green;
@@ -133,11 +135,15 @@ class SceneKeyColor {
 
       if (data == null) return const <String>[];
 
-      return dominantEdgeColors(
-        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
-        width,
-        height,
+      final pixels = data.buffer.asUint8List(
+        data.offsetInBytes,
+        data.lengthInBytes,
       );
+      final colors = dominantEdgeColors(pixels, width, height);
+
+      // A background that cannot be keyed cleanly would leave fragments of the
+      // model floating over the speaker: such a scene is not keyed at all.
+      return SceneKeyQuality.keepIfClean(pixels, width, height, colors);
     } catch (_) {
       return const <String>[];
     }
