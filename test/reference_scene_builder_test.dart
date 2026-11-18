@@ -165,4 +165,81 @@ void main() {
       expect(plan.totalDuration, closeTo(2.6, 0.05));
     });
   });
+
+  group('one identity', () {
+    const allowedTops = <int>{0xFF08090D, 0xFF24150F};
+
+    test('every background comes from the one palette family', () {
+      for (var variant = 0; variant < 6; variant++) {
+        final result = ReferenceSceneBuilder.buildCutaway(
+          id: 'pal$variant',
+          spec: const CutawaySpec(
+            start: 5,
+            end: 7.6,
+            text: 'سر البركة والخير في حياة الناس',
+          ),
+          width: 720,
+          height: 1280,
+          variant: variant,
+        );
+        final backgrounds = result.assets.values
+            .where((asset) => asset.kind == SceneAssetKind.background)
+            .toList();
+        expect(backgrounds, isNotEmpty);
+        for (final background in backgrounds) {
+          expect(allowedTops.contains(background.topColor), isTrue);
+        }
+      }
+    });
+
+    test('a phrase with no meaning shows the mascot with the heart companion', () {
+      final result = ReferenceSceneBuilder.buildCutaway(
+        id: 'mas',
+        spec: const CutawaySpec(start: 5, end: 7, text: 'xyz qwerty abc'),
+        width: 720,
+        height: 1280,
+      );
+      final main = result.assets['sprite:mas_s0']!;
+      final decor = result.assets['decor:mas_s0']!;
+      if (main.kind == SceneAssetKind.sprite) {
+        expect(main.spriteKey, ReferenceSceneBuilder.mascotSprite);
+        expect(decor.spriteKey, ReferenceSceneBuilder.mascotCompanionSprite);
+      } else {
+        expect(decor.spriteKey, ReferenceSceneBuilder.mascotSprite);
+      }
+    });
+
+    test('a meaningful sprite is always accompanied by the mascot', () {
+      for (var variant = 0; variant < 6; variant++) {
+        final result = ReferenceSceneBuilder.buildCutaway(
+          id: 'money$variant',
+          spec: const CutawaySpec(start: 5, end: 7, text: 'نتحدث عن المال'),
+          width: 720,
+          height: 1280,
+          variant: variant,
+        );
+        expect(
+          result.assets['sprite:money${variant}_s0']!.spriteKey,
+          'pixel_gold_coin',
+        );
+        expect(
+          result.assets['decor:money${variant}_s0']!.spriteKey,
+          ReferenceSceneBuilder.mascotSprite,
+        );
+      }
+    });
+
+    test('the companion is never the same sprite as the main one', () {
+      expect(
+        ReferenceSceneBuilder.companionSpriteFor('pixel_gold_coin'),
+        ReferenceSceneBuilder.mascotSprite,
+      );
+      expect(
+        ReferenceSceneBuilder.companionSpriteFor(
+          ReferenceSceneBuilder.mascotSprite,
+        ),
+        ReferenceSceneBuilder.mascotCompanionSprite,
+      );
+    });
+  });
 }
