@@ -9,6 +9,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'analyzer.dart';
 import 'broll.dart';
+import 'caption_motion_gate.dart';
 import 'dense_cutaway_planner.dart';
 import 'settings.dart';
 import 'editing_engine.dart';
@@ -1064,6 +1065,14 @@ class Enhancer {
         cur = o;
       }
 
+      // Full-screen motion cutaways show one impact word; the caption sentence
+      // is not drawn while one is on screen (see CaptionMotionGate).
+      final motionWindows = <List<double>>[
+        for (final layer in brollLayers)
+          if (layer.sourcePath!.contains('motion_scene_'))
+            <double>[layer.start, layer.end],
+      ];
+
       final captionLayers = timelineProject
           .layersOfType(TimelineLayerType.caption)
           .where((layer) => layer.visible && layer.sourcePath != null);
@@ -1102,7 +1111,12 @@ class Enhancer {
         final x = 'main_w*($xValue)-overlay_w/2';
         final y = 'main_h*($yValue)-overlay_h/2';
         final o = next();
-        chains.add("[$cur][$label]overlay=x='$x':y='$y':enable='between(t,${_f(layer.start)},${_f(layer.end)})'[$o]");
+        final captionEnable = CaptionMotionGate.enableExpression(
+          start: layer.start,
+          end: layer.end,
+          windows: motionWindows,
+        );
+        chains.add("[$cur][$label]overlay=x='$x':y='$y':enable='$captionEnable'[$o]");
         cur = o;
         captionIndex++;
       }
