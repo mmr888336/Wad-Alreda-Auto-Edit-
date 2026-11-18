@@ -16,6 +16,11 @@ class MotionGraphicsPlan {
   final double captionTravel;
   final CameraMotionStyle cameraStyle;
 
+  /// B-roll must cut in and out, not dissolve: a longer alpha fade leaves the
+  /// speaker and the B-roll on screen together (double exposure) for most of a
+  /// 1-2 second cutaway. Motion Smith style cuts last 0.1-0.3 seconds.
+  static const double maxBrollFadeSeconds = 0.16;
+
   const MotionGraphicsPlan({
     required this.mood,
     required this.label,
@@ -39,7 +44,7 @@ class MotionGraphicsPlan {
           captionFadeOutSeconds: 0.22,
           hookEnterSeconds: 0.42,
           hookDurationSeconds: 3.2,
-          brollFadeSeconds: 0.42,
+          brollFadeSeconds: 0.14,
           captionTravel: 0.34,
           cameraStyle: CameraMotionStyle.restrained,
         );
@@ -53,7 +58,7 @@ class MotionGraphicsPlan {
           captionFadeOutSeconds: 0.16,
           hookEnterSeconds: 0.30,
           hookDurationSeconds: 3.2,
-          brollFadeSeconds: 0.28,
+          brollFadeSeconds: 0.08,
           captionTravel: 0.72,
           cameraStyle: CameraMotionStyle.energetic,
         );
@@ -67,7 +72,7 @@ class MotionGraphicsPlan {
           captionFadeOutSeconds: 0.20,
           hookEnterSeconds: 0.38,
           hookDurationSeconds: 3.2,
-          brollFadeSeconds: 0.36,
+          brollFadeSeconds: 0.12,
           captionTravel: 0.48,
           cameraStyle: CameraMotionStyle.cinematic,
         );
@@ -110,8 +115,7 @@ class MotionGraphicsPlan {
         .clamp(0.06, safeDuration / 2)
         .toDouble();
 
-    final fadeOutStart =
-        (safeDuration - fadeOut).clamp(0.0, safeDuration);
+    final fadeOutStart = (safeDuration - fadeOut).clamp(0.0, safeDuration);
 
     final seed = (timelineStart * 10).round();
 
@@ -201,12 +205,13 @@ class MotionGraphicsPlan {
   }) {
     final duration = (end - start).clamp(0.12, 600.0).toDouble();
 
-    final fade = brollFadeSeconds
+    final fade = (brollFadeSeconds < maxBrollFadeSeconds
+            ? brollFadeSeconds
+            : maxBrollFadeSeconds)
         .clamp(0.06, duration / 2)
         .toDouble();
 
-    final fadeOutStart =
-        (duration - fade).clamp(0.0, duration);
+    final fadeOutStart = (duration - fade).clamp(0.0, duration);
 
     final camera = MotionCameraEngine.buildFilter(
       duration: duration,
