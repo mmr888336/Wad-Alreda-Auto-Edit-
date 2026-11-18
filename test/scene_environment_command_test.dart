@@ -94,9 +94,10 @@ void main() {
         ),
       ]);
 
-      // keyed card -> raw -> grade -> split (color / alpha / shadow)
+      // keyed card -> raw -> grade -> split (color / alpha / shadow).
+      // rr = gainRed * ((1 - saturation) * 0.2126 + saturation) = 0.875
       expect(command, contains('colorkey=0x101521:0.12:0.08'));
-      expect(command, contains('[raw0]colorchannelmixer=rr=0.950'));
+      expect(command, contains('[raw0]colorchannelmixer=rr=0.875'));
       expect(command, contains("lutrgb=r='val*0.940+15.000'"));
       expect(command, contains('format=gbrap,gblur=sigma=0.900,format=rgba'));
       expect(command, contains('split=3[envc0][enva0][envs0]'));
@@ -156,40 +157,39 @@ void main() {
           .firstMatch(command)!
           .group(1)!;
 
-      final produced = <String, int>{};
-      final consumed = <String, int>{};
+      final finalLabel = RegExp(r'-map "\[([^\]]+)\]"')
+          .firstMatch(command)!
+          .group(1)!;
 
-      for (final chain in graph.split(';')) {
-        final open = chain.indexOf('[');
-        final firstFilter = chain.indexOf(RegExp(r'\]\s*[A-Za-z]'));
-        final lastClose = chain.lastIndexOf(']');
-        final lastOpen = chain.lastIndexOf('[');
-
-        // inputs: every [label] before the first filter name
-        final head = chain.substring(open, firstFilter + 1);
-        for (final match in RegExp(r'\[([^\]]+)\]').allMatches(head)) {
-          consumed[match.group(1)!] = (consumed[match.group(1)!] ?? 0) + 1;
-        }
-
-        // outputs: every [label] at the end of the chain
-        final tail = chain.substring(lastOpen, lastClose + 1);
-        for (final match in RegExp(r'\[([^\]]+)\]').allMatches(tail)) {
-          produced[match.group(1)!] = (produced[match.group(1)!] ?? 0) + 1;
-        }
+      final counts = <String, int>{};
+      for (final match in RegExp(r'\[([^\]]+)\]').allMatches(graph)) {
+        final label = match.group(1)!;
+        counts[label] = (counts[label] ?? 0) + 1;
       }
 
-      for (final entry in produced.entries) {
-        expect(entry.value, 1, reason: '${entry.key} is produced once');
-        expect(
-          consumed[entry.key],
-          1,
-          reason: '${entry.key} is consumed exactly once',
-        );
+      expect(counts.containsKey(finalLabel), isTrue);
+
+      for (final entry in counts.entries) {
+        if (RegExp(r'^\d+:v$').hasMatch(entry.key)) {
+          // an input stream is read once
+          expect(entry.value, 1, reason: '${entry.key} is read once');
+        } else if (entry.key == finalLabel) {
+          // the final output is produced here and mapped outside the graph
+          expect(entry.value, 1, reason: '${entry.key} is the output');
+        } else {
+          // every other label is produced once and consumed once
+          expect(
+            entry.value,
+            2,
+            reason: '${entry.key} is produced once and used once',
+          );
+        }
       }
 
       // with the person matte: shadow, card and the person cut-out
       expect(RegExp(r'overlay=').allMatches(command).length, 3);
       expect(command, contains('alphamerge[pcut0]'));
+      expect(finalLabel, 'ptop0');
     });
 
     test('without grain the card is only split in two', () {
