@@ -10,6 +10,7 @@ import 'filament_scene_exporter.dart';
 import 'khronos_model_catalog.dart';
 import 'person_anchored_compositor.dart';
 import 'person_tracking_service.dart';
+import 'scene_frame_guard.dart';
 import 'settings.dart';
 import 'three_d_asset_service.dart';
 import 'three_d_crash_guard.dart';
@@ -900,6 +901,22 @@ class ThreeDScenePipeline {
           notes.add(
             'مشهد $sceneNumber: ${keywords.take(3).join('، ')} ← ${usedAsset.title}',
           );
+
+          // A capture that never finished decodes as a bright green band;
+          // such a scene is dropped instead of being shown over the speaker.
+          final cleanFrames = await SceneFrameGuard.isClean(
+            scenePath,
+            File(scenePath).parent.path,
+          );
+          if (!cleanFrames) {
+            notes.add(
+              'مشهد $sceneNumber: إطارات المجسم تالفة (شاشة خضراء)؛ تم تخطيه بدل عرضه.',
+            );
+            try {
+              File(scenePath).deleteSync();
+            } catch (_) {}
+            continue;
+          }
 
           sceneClips.add(
             ThreeDSceneClip(
