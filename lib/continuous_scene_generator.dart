@@ -13,10 +13,11 @@
 /// VFX overlay, background, cinematic look) still comes from
 /// [ReferenceSceneBuilder]: every beat is built as a mini cutaway, then its
 /// sprite, decor and word layers are re-animated for the chosen composition
-/// and the beats are joined with the transition library (never the same
-/// transition twice in a row). The depth camera (see DepthCameraPlanner) is
-/// added afterwards by the renderer, so perspective changes from scene to
-/// scene as well. Pure Dart, no I/O.
+/// and the beats are joined with a SHORT transition (0.35 seconds at most,
+/// the same kinds the scene builder uses, never the same one twice in a row).
+/// The depth camera (see DepthCameraPlanner) is added afterwards by the
+/// renderer, so perspective changes from scene to scene as well. Pure Dart,
+/// no I/O.
 library;
 
 import 'dart:math' as math;
@@ -420,30 +421,11 @@ class ContinuousSceneGenerator {
 
   static final RegExp _wordId = RegExp(r'_w(\d+)$');
 
-  static MotionTransitionKind _transition(MotionMood mood, int n) {
-    const dynamicKinds = <MotionTransitionKind>[
-      MotionTransitionKind.pixelBlockWipe,
-      MotionTransitionKind.glitchSlice,
-      MotionTransitionKind.zoomSmash,
-      MotionTransitionKind.rgbSplit,
-    ];
-    const calmKinds = <MotionTransitionKind>[
-      MotionTransitionKind.blurDissolve,
-      MotionTransitionKind.lightLeak,
-      MotionTransitionKind.matchCut,
-    ];
-    const cinematicKinds = <MotionTransitionKind>[
-      MotionTransitionKind.whipPan,
-      MotionTransitionKind.redFlash,
-      MotionTransitionKind.blurDissolve,
-    ];
-    final kinds = switch (mood) {
-      MotionMood.calm => calmKinds,
-      MotionMood.cinematic => cinematicKinds,
-      MotionMood.dynamic => dynamicKinds,
-    };
-    return kinds[n.abs() % kinds.length];
-  }
+  /// The transition between two beats. It is the same short kind the scene
+  /// builder uses (0.35 seconds at most): a long wipe or dissolve keeps two
+  /// pictures on screen together, the reference cuts last 0.1-0.3 seconds.
+  static MotionTransitionKind _transition(MotionMood mood, int n) =>
+      ReferenceSceneBuilder.transitionKindFor(mood, n);
 
   // -------------------------------------------------------------------------
   // Keyframes of a composition

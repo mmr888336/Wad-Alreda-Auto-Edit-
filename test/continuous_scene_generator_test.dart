@@ -160,20 +160,54 @@ void main() {
       expect(sprite.keyframes.any((k) => k.rotation != 0), isTrue);
     });
 
-    test('all words of the phrase are kept', () {
+    test('every scene shows one impact word, taken from the phrase', () {
       final plan = ContinuousSceneGenerator.build(
         id: 'g4',
         spec: const CutawaySpec(start: 5, end: 11, text: _sixWords),
         width: 720,
         height: 1280,
       );
-      final shown = <String>{
-        for (final scene in plan.result.project.scenes)
+      final phrase = ReferenceSceneBuilder.wordsOf(_sixWords).toSet();
+      for (final scene in plan.result.project.scenes) {
+        final shown = <String>[
           for (final layer in scene.layers)
             if (layer.text != null) layer.text!,
-      };
-      for (final word in ReferenceSceneBuilder.wordsOf(_sixWords)) {
-        expect(shown, contains(word));
+        ];
+        expect(shown, isNotEmpty);
+        expect(
+          shown.length,
+          lessThanOrEqualTo(ReferenceSceneBuilder.maxWordsPerScene),
+        );
+        for (final word in shown) {
+          expect(phrase, contains(word));
+        }
+      }
+    });
+
+    test('scenes are joined with short cuts in every mood', () {
+      for (final mood in MotionMood.values) {
+        for (var variant = 0; variant < 4; variant++) {
+          final plan = ContinuousSceneGenerator.build(
+            id: 'cut${mood.name}$variant',
+            spec: const CutawaySpec(start: 5, end: 11, text: _sixWords),
+            width: 720,
+            height: 1280,
+            mood: mood,
+            variant: variant,
+          );
+          final scenes = plan.result.project.scenes;
+          for (var i = 1; i < scenes.length; i++) {
+            final kind = scenes[i].transitionIn;
+            expect(
+              MotionTransitions.defaultDuration(kind),
+              lessThanOrEqualTo(ReferenceSceneBuilder.maxTransitionSeconds),
+              reason: '${mood.name} $variant scene $i uses $kind',
+            );
+            if (i > 1) {
+              expect(kind, isNot(scenes[i - 1].transitionIn));
+            }
+          }
+        }
       }
     });
 
