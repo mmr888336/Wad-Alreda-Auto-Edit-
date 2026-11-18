@@ -42,8 +42,24 @@ class _Candidate {
 class KeywordCalloutPlanner {
   KeywordCalloutPlanner._();
 
-  /// Master switch for keyword callouts in exported videos.
-  static bool enabled = true;
+  static bool _enabled = true;
+
+  /// Whether a callout word may be drawn over the speaker in the exported
+  /// video. It is OFF: the callout is a big word that sits above the
+  /// speaker's head and repeats a word of the caption shown right below it,
+  /// so the same sentence was read twice on screen. Motion Smith shows one
+  /// line of text at a time; the emphasis word belongs to the full-screen
+  /// motion cutaways (which already draw the key words of the phrase).
+  /// The planner itself still works when this is switched on.
+  static bool drawOverSpeaker = false;
+
+  /// Master switch for keyword callouts in exported videos. It is true only
+  /// when the planner is enabled AND callouts may be drawn over the speaker.
+  static bool get enabled => _enabled && drawOverSpeaker;
+
+  static set enabled(bool value) {
+    _enabled = value;
+  }
 
   /// The hook title owns the first seconds of the video.
   static const double firstAllowedStart = 3.4;
@@ -102,7 +118,7 @@ class KeywordCalloutPlanner {
     int maxCount = 3,
     List<List<double>> avoid = const <List<double>>[],
   }) {
-    if (!enabled || maxCount <= 0 || !duration.isFinite || duration < 6) {
+    if (!_enabled || maxCount <= 0 || !duration.isFinite || duration < 6) {
       return const <KeywordCallout>[];
     }
 
