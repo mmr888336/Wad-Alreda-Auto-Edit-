@@ -12,9 +12,15 @@
 /// The main sprite is a pixel-art sprite whenever a word of the phrase has a
 /// pixel meaning (the existing behaviour). Otherwise the semantic visual
 /// library (see MotionVisualLibrary) is searched and its best match is used;
-/// the pixel fallback sprites remain the last resort. The mood also picks a
-/// cinematic look (see MotionVisualPipeline): overlay layers per scene and a
-/// whole-clip grade that the renderer applies after compositing.
+/// the orange mascot is the last resort. The mood also picks a cinematic look
+/// (see MotionVisualPipeline): overlay layers per scene and a whole-clip grade
+/// that the renderer applies after compositing.
+///
+/// One identity for the whole video (as in the Motion Smith reference): the
+/// orange cube mascot is the only recurring character (the small companion
+/// that orbits the main sprite, or the main sprite itself when no word has a
+/// meaning), and every background comes from one palette family (near-black,
+/// deep brown, crimson and teal).
 library;
 
 import 'dart:math' as math;
@@ -122,14 +128,11 @@ class ReferenceSceneBuilder {
   /// Cutaways may cover at most this share of the video.
   static const double maxCoverage = 0.25;
 
-  static const List<String> _fallbackSprites = <String>[
-    'pixel_orange_mascot',
-    'pixel_camera',
-    'pixel_red_heart',
-    'pixel_gold_coin',
-    'pixel_potted_plant',
-    'pixel_game_controller',
-  ];
+  /// The one recurring character of the video (orange cube robot).
+  static const String mascotSprite = 'pixel_orange_mascot';
+
+  /// Small companion used when the main sprite already is the mascot.
+  static const String mascotCompanionSprite = 'pixel_red_heart';
 
   // Stems are written already normalised (see [normalize]) and are matched
   // with startsWith after removing a leading definite article.
@@ -215,12 +218,13 @@ class ReferenceSceneBuilder {
     ],
   };
 
-  // Background gradients (top, bottom) as 0xAARRGGBB.
+  // Background gradients (top, bottom) as 0xAARRGGBB. One palette family taken
+  // from the Motion Smith reference: near-black #08090D, deep brown #24150F,
+  // crimson and electric teal, each pushed dark so white words stay readable.
   static const List<List<int>> _palettes = <List<int>>[
-    <int>[0xFF10153A, 0xFF2B1B5E],
-    <int>[0xFF062B2F, 0xFF0F5257],
-    <int>[0xFF2B0A12, 0xFF5A1626],
-    <int>[0xFF1B1F0A, 0xFF3F4A14],
+    <int>[0xFF08090D, 0xFF24150F],
+    <int>[0xFF24150F, 0xFF7A0E1C],
+    <int>[0xFF08090D, 0xFF0A4F4A],
   ];
 
   /// Lower-cases Latin text and folds common Arabic spelling variants so a
@@ -278,6 +282,12 @@ class ReferenceSceneBuilder {
     }
     return null;
   }
+
+  /// The small orbiting companion for a scene whose main sprite is
+  /// [mainSprite]: always the mascot, unless the mascot is already the main
+  /// sprite.
+  static String companionSpriteFor(String mainSprite) =>
+      mainSprite == mascotSprite ? mascotCompanionSprite : mascotSprite;
 
   static bool _overlaps(double start, double end, List<List<double>> avoid) {
     for (final range in avoid) {
@@ -613,12 +623,11 @@ class ReferenceSceneBuilder {
         libraryMatch = visualPlan.assets[si];
       }
 
-      final mainSprite = pixelSprite ??
-          _fallbackSprites[(variant + si).abs() % _fallbackSprites.length];
-      final mainIndex = _fallbackSprites.indexOf(mainSprite);
-      final decorSprite = _fallbackSprites[
-          ((mainIndex < 0 ? 0 : mainIndex) + 1 + variant.abs()) %
-              _fallbackSprites.length];
+      // One character for the whole video: when no word has a meaning the
+      // main sprite is the mascot, and the orbiting companion is the mascot
+      // whenever the main sprite is something else.
+      final mainSprite = pixelSprite ?? mascotSprite;
+      final decorSprite = companionSpriteFor(mainSprite);
 
       final palette = _palettes[(variant + si).abs() % _palettes.length];
       assets['bg:$sid'] = SceneAssetSpec(
@@ -641,7 +650,7 @@ class ReferenceSceneBuilder {
       }
       assets['decor:$sid'] = SceneAssetSpec(
         kind: SceneAssetKind.sprite,
-        spriteKey: decorSprite,
+        spriteKey: libraryMatch != null ? mascotSprite : decorSprite,
         widthFraction: spriteFraction * 0.42,
       );
 
