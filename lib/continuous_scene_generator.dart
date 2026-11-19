@@ -25,18 +25,26 @@
 /// scene, and the props chosen by the meaning of the sentence, each with its
 /// own depth. The scene's own background gradient and its companion mascot
 /// are replaced by them (a main sprite that is the mascot itself is replaced
-/// by the character too). [worldEnabled] switches this off. Pure Dart, no
-/// I/O.
+/// by the character too). [worldEnabled] switches this off.
+///
+/// Directed text: from the SAME story, [DirectedText] decides which word of a
+/// beat is the effect word (the idea of the sentence, not just the longest
+/// word). That word becomes the impact word of the scene, and a word is never
+/// shown twice in a row. [directedTextEnabled] switches this off. The
+/// transitions stay the short set above: the directed-text transition set
+/// contains a 0.4 second pan that is longer than a cutaway cut may be.
+/// Pure Dart, no I/O.
 library;
 
 import 'dart:math' as math;
 
+import 'directed_text.dart' show DirectedText;
 import 'motion_graphics.dart' show MotionMood;
 import 'motion_scene_editing.dart';
 import 'motion_scene_model.dart';
 import 'motion_transitions.dart';
 import 'reference_scene_builder.dart';
-import 'story_understanding.dart' show StorySegment;
+import 'story_understanding.dart' show StorySegment, StoryUnderstanding;
 import 'story_world_bridge.dart';
 
 /// Where the elements of a scene sit and how they enter.
@@ -432,6 +440,11 @@ class ContinuousSceneGenerator {
   /// exactly what [ReferenceSceneBuilder] built.
   static bool worldEnabled = true;
 
+  /// Directed text: the impact word of a scene is the effect word the story
+  /// chose for its beat, and a word is never shown twice in a row. Needs the
+  /// story, so it does nothing when the world could not be planned.
+  static bool directedTextEnabled = true;
+
   /// Most scenes one cutaway is cut into.
   static const int maxScenes = 5;
 
@@ -658,6 +671,72 @@ class ContinuousSceneGenerator {
   }
 
   // -------------------------------------------------------------------------
+  // Directed text
+  // -------------------------------------------------------------------------
+
+  /// The effect word of every beat, by beat index, as [DirectedText] marks
+  /// it (the accented word of the beat's first accented cue). Empty when
+  /// directed text is off, there is no story, or planning fails.
+  static Map<int, String> _accentWords(StoryWorldPlan? world) {
+    final result = <int, String>{};
+    if (!directedTextEnabled || world == null) return result;
+    try {
+      for (final cue in DirectedText.plan(world.story)) {
+        if (result.containsKey(cue.beatIndex)) continue;
+        for (final word in cue.words) {
+          if (word.accent) {
+            result[cue.beatIndex] = word.text;
+            break;
+          }
+        }
+      }
+    } catch (_) {
+      result.clear();
+    }
+    return result;
+  }
+
+  /// [layers] with the word layer(s) showing [accent] instead of their own
+  /// word. The asset of a changed layer is replaced in [assets] too.
+  static List<MotionLayer> _withAccentWord(
+    List<MotionLayer> layers,
+    Map<String, SceneAssetSpec> assets,
+    String accent,
+  ) {
+    final result = <MotionLayer>[];
+    for (final layer in layers) {
+      final key = layer.assetKey;
+      final text = layer.text;
+      if (key == null ||
+          text == null ||
+          text == accent ||
+          !_wordId.hasMatch(layer.id)) {
+        result.add(layer);
+        continue;
+      }
+      assets[key] = SceneAssetSpec(kind: SceneAssetKind.word, text: accent);
+      result.add(
+        MotionLayer(
+          id: layer.id,
+          start: layer.start,
+          end: layer.end,
+          x: layer.x,
+          y: layer.y,
+          scale: layer.scale,
+          rotation: layer.rotation,
+          opacity: layer.opacity,
+          zIndex: layer.zIndex,
+          assetKey: key,
+          text: accent,
+          keyframes: layer.keyframes,
+          depth: layer.depth,
+        ),
+      );
+    }
+    return result;
+  }
+
+  // -------------------------------------------------------------------------
   // Build
   // -------------------------------------------------------------------------
 
@@ -730,8 +809,10 @@ class ContinuousSceneGenerator {
 
     // The story and the world of the beats: one character and one palette
     // for every scene of the cutaway (and of every other cutaway, because
-    // both are fixed defaults).
+    // both are fixed defaults). The effect words come from the same story.
     final world = _planWorld(chunks, sceneDur);
+    final accents = _accentWords(world);
+    var lastShown = '';
 
     final scenes = <MotionScene>[];
     final assets = <String, SceneAssetSpec>{};
@@ -811,6 +892,22 @@ class ContinuousSceneGenerator {
             assets.addAll(rendering.assets);
           } catch (_) {
             // Keep the scene as built.
+          }
+        }
+
+        // Directed text: the first scene of a beat shows the effect word the
+        // story chose, unless that word is not in the beat or was just shown.
+        final accent = accents[i];
+        if (si == 0 &&
+            accent != null &&
+            StoryUnderstanding.normalize(accent) != lastShown &&
+            ReferenceSceneBuilder.wordsOf(chunks[i]).contains(accent)) {
+          sceneLayers = _withAccentWord(sceneLayers, assets, accent);
+        }
+        for (final layer in sceneLayers) {
+          final text = layer.text;
+          if (text != null && _wordId.hasMatch(layer.id)) {
+            lastShown = StoryUnderstanding.normalize(text);
           }
         }
 
