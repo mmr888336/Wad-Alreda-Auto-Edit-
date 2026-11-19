@@ -164,4 +164,129 @@ void main() {
       expect(ranked.first['link'], contains('high.mp4'));
     });
   });
+
+  group('BrollFetcher story context (focus and props)', () {
+    Map<String, dynamic> pexelsVideo(String slug) {
+      return {
+        'url': 'https://www.pexels.com/video/$slug/',
+        'width': 1080,
+        'height': 1920,
+        'duration': 8,
+        'video_files': [
+          {
+            'link': 'https://cdn.example/$slug.mp4',
+            'width': 1080,
+            'height': 1920,
+            'file_type': 'video/mp4',
+          },
+        ],
+      };
+    }
+
+    test('contextWords joins the focus and the props, split into words', () {
+      final words = BrollFetcher.contextWords(
+        focus: 'problem',
+        props: <String>['crumpled_paper', 'warning', 'clock'],
+      );
+
+      expect(
+        words,
+        containsAll(<String>['problem', 'crumpled', 'paper', 'warning', 'clock']),
+      );
+    });
+
+    test('contextWords ignores an unknown focus and an empty context', () {
+      expect(BrollFetcher.contextWords(focus: 'none'), isEmpty);
+      expect(BrollFetcher.contextWords(), isEmpty);
+    });
+
+    test('props of the story beat pick the clip that shows them', () {
+      final videos = [
+        pexelsVideo('business-growth-forest-456'),
+        pexelsVideo('business-growth-coins-123'),
+      ];
+
+      final withoutContext = BrollFetcher.rankPexelsVideos(
+        videos,
+        query: 'business growth',
+        portrait: true,
+      );
+      expect(withoutContext.first['url'], contains('forest'));
+
+      final withContext = BrollFetcher.rankPexelsVideos(
+        videos,
+        query: 'business growth',
+        portrait: true,
+        focus: 'money',
+        props: <String>['coins', 'chart', 'wallet'],
+      );
+      expect(withContext.first['url'], contains('coins'));
+    });
+
+    test('a focus of none leaves the ranking unchanged', () {
+      final videos = [
+        pexelsVideo('business-growth-forest-456'),
+        pexelsVideo('business-growth-coins-123'),
+      ];
+
+      final ranked = BrollFetcher.rankPexelsVideos(
+        videos,
+        query: 'business growth',
+        portrait: true,
+        focus: 'none',
+      );
+
+      expect(ranked.first['url'], contains('forest'));
+    });
+
+    test('the story context never beats a clip that matches the query', () {
+      final ranked = BrollFetcher.rankPexelsVideos(
+        [
+          pexelsVideo('coins-chart-wallet-789'),
+          pexelsVideo('phone-product-closeup-456'),
+        ],
+        query: 'phone product',
+        portrait: true,
+        focus: 'money',
+        props: <String>['coins', 'chart', 'wallet'],
+      );
+
+      expect(ranked.first['url'], contains('phone-product'));
+    });
+
+    test('Pixabay tags that mention the props rank higher', () {
+      Map<String, dynamic> hit(String tags) {
+        return {
+          'tags': tags,
+          'pageURL': 'https://pixabay.com/videos/clip/',
+          'duration': 8,
+          'videos': {
+            'large': {
+              'url': 'https://cdn.example/clip.mp4',
+              'width': 1080,
+              'height': 1920,
+            },
+          },
+        };
+      }
+
+      final hits = [hit('success, nature'), hit('success, trophy')];
+
+      final withoutContext = BrollFetcher.rankPixabayHits(
+        hits,
+        query: 'success',
+        portrait: true,
+      );
+      expect(withoutContext.first['tags'], contains('nature'));
+
+      final withContext = BrollFetcher.rankPixabayHits(
+        hits,
+        query: 'success',
+        portrait: true,
+        focus: 'success',
+        props: <String>['trophy', 'flag', 'stairs'],
+      );
+      expect(withContext.first['tags'], contains('trophy'));
+    });
+  });
 }

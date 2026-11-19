@@ -811,6 +811,11 @@ class Enhancer {
             if (brolls.length >= math.min(editingProfile.maxBroll, BrollRelevanceGuard.maxClips)) break;
             if (idea.start < lastEnd + 1.0) continue;
             _checkCancel();
+            // The story beat spoken at this moment knows what the clip is
+            // about: its main idea (focus) and the objects that belong to it
+            // (props). They are passed to the stock search so the clip is
+            // ranked by meaning, not only by the words of the query.
+            final beat = BrollRelevanceGuard.beatFor(idea, storyBeats);
             if (DateTime.now().isAfter(brollDeadline)) {
               notes.add('استغرق تحميل B-roll وقتاً طويلاً؛ تم الاكتفاء بما تم تجهيزه.');
               break;
@@ -822,7 +827,16 @@ class Enhancer {
               if (DateTime.now().isAfter(brollDeadline)) break;
               final animation = attempt == 2;
               final out = '$dir/broll_${stamp}_${index}_$attempt.mp4';
-              final file = await BrollFetcher.fetch(s, idea.query, portrait, out, index + attempt, animation: animation);
+              final file = await BrollFetcher.fetch(
+                s,
+                idea.query,
+                portrait,
+                out,
+                index + attempt,
+                animation: animation,
+                focus: beat?.focus,
+                props: beat?.props ?? const <String>[],
+              );
               if (file == null) continue;
               temps.add(file);
               final safe = await _clipIsSafe(s, file, dir, stamp, '${index}_$attempt', temps);
