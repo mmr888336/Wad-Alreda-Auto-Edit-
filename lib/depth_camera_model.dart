@@ -40,6 +40,22 @@ enum DepthCameraMove {
 
   /// Push in while orbiting and rising: the strongest depth effect.
   spiralIn,
+
+  /// Crane up: the camera rises and pulls back, so the scene opens up and
+  /// settles on the normal framing. Near layers sink more than far ones.
+  craneUp,
+
+  /// Crane down: the camera descends and pushes in. Near layers rise more
+  /// than far ones.
+  craneDown,
+
+  /// Enter the window: the camera dives into the subject, near layers fly
+  /// past it. Meant to be followed by [windowOut] in the next scene.
+  windowIn,
+
+  /// Arrival after [windowIn]: the scene starts zoomed in, as the previous
+  /// one ended, and pulls out into the new world.
+  windowOut,
 }
 
 /// The camera of one motion scene.
