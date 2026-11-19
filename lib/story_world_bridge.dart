@@ -9,13 +9,21 @@
 /// fixed set pieces and the props chosen by the meaning of the sentence, each
 /// with its own depth for the depth camera.
 ///
-/// It only creates new objects: nothing existing is changed, so it can be
-/// plugged into the scene generators one step at a time. Pure Dart, no I/O.
+/// [StoryWorldBridge.renderingOf] goes one step further: it keeps only the
+/// world layers the renderer can draw today (backdrop, the fixed character
+/// and the props that have a library picture) and creates the asset of each
+/// one, so a scene generator can merge them into its own scenes. Set pieces
+/// (desk, window, ...) have no art yet and are left out.
+///
+/// Pure Dart, no I/O.
 library;
 
 import 'cinematic_world.dart';
 import 'motion_scene_model.dart';
 import 'motion_transitions.dart';
+import 'motion_visual_library.dart' show MotionVisualLibrary;
+import 'reference_scene_builder.dart'
+    show ReferenceSceneBuilder, SceneAssetKind, SceneAssetSpec;
 import 'story_understanding.dart';
 
 /// The story of a video and the world planned from it.
@@ -34,8 +42,56 @@ class StoryWorldPlan {
   }
 }
 
+/// The drawable part of one world scene: its layers, the asset of each layer
+/// and the flat background colour (`#RRGGBB`) of the environment.
+class WorldRendering {
+  final String background;
+  final List<MotionLayer> layers;
+  final Map<String, SceneAssetSpec> assets;
+
+  const WorldRendering({
+    required this.background,
+    required this.layers,
+    required this.assets,
+  });
+}
+
 class StoryWorldBridge {
   StoryWorldBridge._();
+
+  /// Library picture that stands for a prop of the story. A prop that is not
+  /// listed has no art yet and is not drawn.
+  static const Map<String, String> propVisuals = <String, String>{
+    'coins': 'coins',
+    'chart': 'chart_bars',
+    'wallet': 'wallet',
+    'books': 'book',
+    'notebook': 'book',
+    'lamp': 'bulb',
+    'lightbulb': 'bulb',
+    'laptop': 'laptop',
+    'screen': 'laptop',
+    'clock': 'clock',
+    'calendar': 'calendar',
+    'trophy': 'trophy',
+    'plant': 'tree',
+    'water': 'water',
+    'lantern': 'crescent',
+    'stars': 'moon_stars',
+    'cups': 'coffee',
+    'car': 'car',
+    'suitcase': 'briefcase',
+    'chip': 'chip',
+    'phone': 'phone',
+    'warning': 'warning',
+  };
+
+  /// Stacking order of the world art inside a merged scene: below the scene's
+  /// own subject (10) and words (20+).
+  static const int backdropZ = 0;
+  static const int propBehindZ = 6;
+  static const int heroZ = 8;
+  static const int propFrontZ = 9;
 
   /// Plans the story of [segments] (in time order) and the world of that
   /// story. The character and the palette are the same in every scene.
@@ -85,6 +141,109 @@ class StoryWorldBridge {
           depth: spec.depth,
         ),
     ];
+  }
+
+  static int _argbOf(String hex) {
+    if (hex.length != 7 || !hex.startsWith('#')) return 0xFF000000;
+    final value = int.tryParse(hex.substring(1), radix: 16);
+    return value == null ? 0xFF000000 : 0xFF000000 | value;
+  }
+
+  static int _darker(int argb, double share) {
+    int channel(int shift) {
+      final value = (argb >> shift) & 0xFF;
+      return (value * (1 - share)).round().clamp(0, 255).toInt();
+    }
+
+    return 0xFF000000 | (channel(16) << 16) | (channel(8) << 8) | channel(0);
+  }
+
+  /// The asset the renderer must draw for [spec], or null when there is no
+  /// art for it yet (set pieces, props without a library picture).
+  static SceneAssetSpec? _assetFor(WorldLayerSpec spec, String backdropHex) {
+    final key = spec.assetKey;
+    if (key.startsWith('bg:')) {
+      final top = _argbOf(backdropHex);
+      return SceneAssetSpec(
+        kind: SceneAssetKind.background,
+        topColor: top,
+        bottomColor: _darker(top, 0.45),
+      );
+    }
+    if (key.startsWith('sprite:')) {
+      // The one recurring character of the video.
+      return const SceneAssetSpec(
+        kind: SceneAssetKind.sprite,
+        spriteKey: ReferenceSceneBuilder.mascotSprite,
+        widthFraction: 1.0,
+      );
+    }
+    // Set pieces are full-canvas layers (scale 1) and have no art yet; props
+    // are small and sit in a slot.
+    if (key.startsWith('decor:') && spec.scale < 0.9) {
+      final id = propVisuals[key.substring('decor:'.length)];
+      if (id == null || MotionVisualLibrary.byId(id) == null) return null;
+      return SceneAssetSpec(
+        kind: SceneAssetKind.visual,
+        spriteKey: id,
+        widthFraction: 1.0,
+      );
+    }
+    return null;
+  }
+
+  static int _zIndexFor(WorldLayerSpec spec) {
+    final key = spec.assetKey;
+    if (key.startsWith('bg:')) return backdropZ;
+    if (key.startsWith('sprite:')) return heroZ;
+    return spec.depth > WorldCharacter.depth ? propFrontZ : propBehindZ;
+  }
+
+  /// The drawable layers of [scene] from [start] to [end] seconds, with an
+  /// asset for each. Layer ids start with [idPrefix] so they stay unique when
+  /// several scenes share one project. Position, size and depth come from the
+  /// world plan untouched. A picture is used once per scene.
+  static WorldRendering renderingOf(
+    WorldScene scene, {
+    required String idPrefix,
+    required double start,
+    required double end,
+  }) {
+    if (!start.isFinite || !end.isFinite || end <= start) {
+      throw ArgumentError('Invalid scene range: $start..$end');
+    }
+    final background = backgroundOf(scene);
+    final layers = <MotionLayer>[];
+    final assets = <String, SceneAssetSpec>{};
+    final usedVisuals = <String>{};
+
+    for (final spec in scene.layers) {
+      final asset = _assetFor(spec, background);
+      if (asset == null) continue;
+      if (asset.kind == SceneAssetKind.visual &&
+          !usedVisuals.add(asset.spriteKey ?? '')) {
+        continue;
+      }
+      assets[spec.assetKey] = asset;
+      layers.add(
+        MotionLayer(
+          id: '${idPrefix}_${spec.id}',
+          start: start,
+          end: end,
+          x: spec.x,
+          y: spec.y,
+          scale: spec.scale,
+          zIndex: _zIndexFor(spec),
+          assetKey: spec.assetKey,
+          depth: spec.depth,
+        ),
+      );
+    }
+    return WorldRendering(
+      background: background,
+      layers: layers,
+      assets: assets,
+    );
   }
 
   /// One motion scene for [scene] from [start] to [end] seconds, entered with

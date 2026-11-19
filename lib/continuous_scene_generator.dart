@@ -16,8 +16,17 @@
 /// and the beats are joined with a SHORT transition (0.35 seconds at most,
 /// the same kinds the scene builder uses, never the same one twice in a row).
 /// The depth camera (see DepthCameraPlanner) is added afterwards by the
-/// renderer, so perspective changes from scene to scene as well. Pure Dart,
-/// no I/O.
+/// renderer, so perspective changes from scene to scene as well.
+///
+/// Story world: the beats are also read as a story (see
+/// [StoryWorldBridge.plan]: StoryUnderstanding, then CinematicWorld). Every
+/// scene then gets the fixed world art of its environment: the backdrop in
+/// the fixed palette, the ONE main character at the same place in every
+/// scene, and the props chosen by the meaning of the sentence, each with its
+/// own depth. The scene's own background gradient and its companion mascot
+/// are replaced by them (a main sprite that is the mascot itself is replaced
+/// by the character too). [worldEnabled] switches this off. Pure Dart, no
+/// I/O.
 library;
 
 import 'dart:math' as math;
@@ -27,6 +36,8 @@ import 'motion_scene_editing.dart';
 import 'motion_scene_model.dart';
 import 'motion_transitions.dart';
 import 'reference_scene_builder.dart';
+import 'story_understanding.dart' show StorySegment;
+import 'story_world_bridge.dart';
 
 /// Where the elements of a scene sit and how they enter.
 enum SceneLayout {
@@ -399,7 +410,15 @@ class ContinuousScenePlan {
   final ReferenceSceneResult result;
   final List<SceneLayout> layouts;
 
-  const ContinuousScenePlan({required this.result, required this.layouts});
+  /// The story and the world planned for this cutaway, or null when the
+  /// world is switched off or could not be planned.
+  final StoryWorldPlan? world;
+
+  const ContinuousScenePlan({
+    required this.result,
+    required this.layouts,
+    this.world,
+  });
 }
 
 class ContinuousSceneGenerator {
@@ -407,6 +426,11 @@ class ContinuousSceneGenerator {
 
   /// Master switch: when false the renderer uses the plain scene builder.
   static bool enabled = true;
+
+  /// Story world: the fixed character, the fixed palette per environment and
+  /// the props chosen by the meaning of each beat. When false the scenes are
+  /// exactly what [ReferenceSceneBuilder] built.
+  static bool worldEnabled = true;
 
   /// Most scenes one cutaway is cut into.
   static const int maxScenes = 5;
@@ -596,6 +620,44 @@ class ContinuousSceneGenerator {
   }
 
   // -------------------------------------------------------------------------
+  // Story world
+  // -------------------------------------------------------------------------
+
+  /// Plans the story and the world of the beats [chunks]. Only the text and
+  /// the order of the beats shape the world layers; the times just have to
+  /// be valid. Returns null when the world is off or planning fails, so the
+  /// cutaway is never lost because of it.
+  static StoryWorldPlan? _planWorld(List<String> chunks, double beatSeconds) {
+    if (!worldEnabled || chunks.isEmpty) return null;
+    try {
+      return StoryWorldBridge.plan(<StorySegment>[
+        for (var i = 0; i < chunks.length; i++)
+          StorySegment(
+            text: chunks[i],
+            start: i * beatSeconds,
+            end: (i + 1) * beatSeconds,
+          ),
+      ]);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// True for the layers the world art takes over: the scene's own
+  /// background, its companion mascot, and a main sprite that is the mascot.
+  static bool _replacedByWorld(
+    MotionLayer layer,
+    Map<String, SceneAssetSpec> assets,
+  ) {
+    if (layer.id.endsWith('_bg') || layer.id.endsWith('_decor')) return true;
+    if (!layer.id.endsWith('_sprite')) return false;
+    final spec = assets[layer.assetKey];
+    return spec != null &&
+        spec.kind == SceneAssetKind.sprite &&
+        spec.spriteKey == ReferenceSceneBuilder.mascotSprite;
+  }
+
+  // -------------------------------------------------------------------------
   // Build
   // -------------------------------------------------------------------------
 
@@ -666,6 +728,11 @@ class ContinuousSceneGenerator {
       }
     }
 
+    // The story and the world of the beats: one character and one palette
+    // for every scene of the cutaway (and of every other cutaway, because
+    // both are fixed defaults).
+    final world = _planWorld(chunks, sceneDur);
+
     final scenes = <MotionScene>[];
     final assets = <String, SceneAssetSpec>{};
     final layouts = <SceneLayout>[];
@@ -708,17 +775,53 @@ class ContinuousSceneGenerator {
         layouts.add(layout);
         final comp = SceneComposition.of(layout);
 
+        final sceneStart = scene.start + chunkStart;
+        final sceneEnd = scene.end + chunkStart;
+        var sceneLayers = <MotionLayer>[
+          for (final layer in scene.layers) _recompose(layer, comp, chunkStart),
+        ];
+        var background = scene.background;
+
+        // Merge the world art of this beat into the scene. A problem here
+        // only means the scene stays as the scene builder made it.
+        final worldScene = world?.worldSceneOf(i);
+        if (worldScene != null) {
+          try {
+            final rendering = StoryWorldBridge.renderingOf(
+              worldScene,
+              idPrefix: scene.id,
+              start: sceneStart,
+              end: sceneEnd,
+            );
+            final kept = <MotionLayer>[];
+            final droppedKeys = <String>[];
+            for (final layer in sceneLayers) {
+              if (_replacedByWorld(layer, chunk.assets)) {
+                final key = layer.assetKey;
+                if (key != null) droppedKeys.add(key);
+              } else {
+                kept.add(layer);
+              }
+            }
+            sceneLayers = <MotionLayer>[...kept, ...rendering.layers];
+            background = rendering.background;
+            for (final key in droppedKeys) {
+              assets.remove(key);
+            }
+            assets.addAll(rendering.assets);
+          } catch (_) {
+            // Keep the scene as built.
+          }
+        }
+
         scenes.add(
           MotionScene(
             id: scene.id,
-            start: scene.start + chunkStart,
-            end: scene.end + chunkStart,
-            background: scene.background,
+            start: sceneStart,
+            end: sceneEnd,
+            background: background,
             transitionIn: (i > 0 && si == 0) ? kinds[i - 1] : scene.transitionIn,
-            layers: <MotionLayer>[
-              for (final layer in scene.layers)
-                _recompose(layer, comp, chunkStart),
-            ],
+            layers: sceneLayers,
           ),
         );
       }
@@ -738,6 +841,7 @@ class ContinuousSceneGenerator {
         assets: assets,
       ),
       layouts: layouts,
+      world: world,
     );
   }
 
