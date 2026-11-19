@@ -50,6 +50,7 @@ import 'motion_visual_library.dart';
 import 'pixel_art_sprites.dart';
 import 'reference_scene_builder.dart';
 import 'scene_layout_memory.dart';
+import 'scene_richness_guard.dart';
 import 'text_render.dart';
 
 class MotionCutawayClip {
@@ -285,6 +286,12 @@ class MotionCutawayRenderer {
         height: mh,
         mood: mood,
       );
+
+      // Thin scenes get a faint giant word and moving atmosphere; a problem
+      // here only means the scene stays as built.
+      try {
+        built = SceneRichnessGuard.enrich(built);
+      } catch (_) {}
 
       // Camera per scene; a planner problem only means a flat cutaway.
       if (depthCameraEnabled) {

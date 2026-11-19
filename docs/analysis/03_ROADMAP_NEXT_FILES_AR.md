@@ -13,3 +13,10 @@
 
 الدفعة 4 — الكابشن والعنوان:
 - `lib/caption_style_engine.dart` / `lib/enhancer.dart`: موضع ديناميكي يتجنب اليد والمايك (من `person_tracker`)، وخروج بحركة للعنوان.
+
+---
+## الدفعة 2 (جاهزة): `scene_richness_guard.dart`
+- أي مشهد موشن فيه أقل من 4 طبقات مرئية أو أقل من overlay متحركين يأخذ: كلمة عملاقة باهتة خلف العنصر (عمق بعيد + حركة بطيئة، مثل المرجع) + جزيئات متحركة (embers/sparkles/bokeh/dust).
+- مربوط في `MotionCutawayRenderer.render` قبل `DepthCameraPlanner`؛ أي خطأ = المشهد يبقى كما بُني.
+- للإيقاف: `SceneRichnessGuard.enabled = false`.
+- المتبقي من الدفعة 2 (شخصية ثابتة + انتقال match-cut من لقطة الشخص) يحتاج لمس `reference_scene_builder.dart` (778 سطر) و`enhancer.dart` وسيأتي في الدفعة 2ب.
