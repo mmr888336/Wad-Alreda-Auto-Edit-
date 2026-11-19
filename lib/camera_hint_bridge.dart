@@ -19,7 +19,9 @@
 ///    window, which needs its arrival in the next scene.
 ///  * [filamentModeFor] turns the hint of the beat spoken during a 3D scene
 ///    into one of the camera modes the native Filament plugin supports.
-///    Only those modes are ever returned (see [filamentModes]).
+///    Only those modes are ever returned (see [filamentModes]). The 3D scene
+///    pipeline reads the story with [beatsOf] and asks [filamentModeFor] for
+///    the camera of every 3D scene.
 ///
 /// [enabled] switches the whole bridge off (the old behaviour then applies).
 /// Pure Dart, no I/O.
@@ -32,7 +34,8 @@ import 'depth_camera_model.dart';
 import 'depth_camera_planner.dart' show DepthCameraPlanner;
 import 'motion_graphics.dart' show MotionMood;
 import 'motion_scene_model.dart' show MotionScene;
-import 'story_understanding.dart' show StoryBeat;
+import 'story_understanding.dart'
+    show StoryBeat, StorySegment, StoryUnderstanding;
 
 class CameraHintBridge {
   CameraHintBridge._();
@@ -74,6 +77,19 @@ class CameraHintBridge {
       case DepthCameraMove.sinkDown:
       case DepthCameraMove.none:
         return 'orbit';
+    }
+  }
+
+  /// The story beats of [segments] (spoken segments in time order), or an
+  /// empty list when there are none or the story cannot be planned. Used by
+  /// code that has the captions of a video but no story yet (the 3D scene
+  /// pipeline); a problem here must never stop an export.
+  static List<StoryBeat> beatsOf(List<StorySegment> segments) {
+    if (segments.isEmpty) return const <StoryBeat>[];
+    try {
+      return StoryUnderstanding.plan(segments).beats;
+    } catch (_) {
+      return const <StoryBeat>[];
     }
   }
 
