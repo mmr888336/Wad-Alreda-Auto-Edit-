@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'package:filament_renderer/filament_renderer.dart';
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
+import 'camera_hint_bridge.dart';
 import 'cue_windows.dart';
 import 'filament_scene_exporter.dart';
 import 'khronos_model_catalog.dart';
@@ -12,6 +13,7 @@ import 'person_anchored_compositor.dart';
 import 'person_tracking_service.dart';
 import 'scene_frame_guard.dart';
 import 'settings.dart';
+import 'story_understanding.dart' show StoryBeat, StorySegment;
 import 'three_d_asset_service.dart';
 import 'three_d_crash_guard.dart';
 import 'three_d_progress.dart';
@@ -58,7 +60,10 @@ class _ThreeDCue {
 /// - Turns the spoken words into English search keywords.
 /// - Searches and downloads GLB assets (with a built-in safety net).
 /// - Loads each asset into the native Filament renderer.
-/// - Captures camera movement.
+/// - Captures camera movement. The camera of each scene follows the story:
+///   the captions are read as a story and the camera hint of the beat spoken
+///   during the scene picks the native camera mode (see [CameraHintBridge]);
+///   a scene without a hint keeps the old fixed cycle.
 /// - Tracks the main person (Phase 1) and anchors each 3D scene to them
 ///   (Phase 2); scenes that cannot be anchored keep the old panel.
 /// - Composites rendered scenes into the exported video.
@@ -114,6 +119,8 @@ class ThreeDScenePipeline {
   /// Stage log of the most recent [apply] call (also when it ended early).
   static ThreeDExportSummary? lastExportSummary;
 
+  /// The old fixed camera cycle. It is still the camera of a scene when the
+  /// story gives no hint for it (see [CameraHintBridge.filamentModeFor]).
   static const List<String> _cameraModes = <String>[
     'orbit',
     'push_in',
@@ -168,6 +175,33 @@ class ThreeDScenePipeline {
   @visibleForTesting
   static int relevanceScore(String title, String query) =>
       _relevanceScore(title, query);
+
+  /// The story of the video, read from the caption layers of [project]: one
+  /// segment per caption, in time order. Its beats carry the camera hints
+  /// that pick the camera of each 3D scene. Empty when there are no captions
+  /// or the story cannot be planned (every scene then keeps the fixed cycle).
+  static List<StoryBeat> _storyBeats(TimelineProject project) {
+    final captions = project
+        .layersOfType(TimelineLayerType.caption)
+        .where(
+          (layer) =>
+              layer.visible &&
+              layer.text != null &&
+              layer.text!.trim().isNotEmpty &&
+              layer.end > layer.start,
+        )
+        .toList()
+      ..sort((a, b) => a.start.compareTo(b.start));
+
+    return CameraHintBridge.beatsOf(<StorySegment>[
+      for (final layer in captions)
+        StorySegment(
+          text: layer.text!.trim(),
+          start: layer.start,
+          end: layer.end,
+        ),
+    ]);
+  }
 
   /// Creates time windows using the caption layers of the existing timeline.
   ///
@@ -625,6 +659,9 @@ class ThreeDScenePipeline {
       );
     }
 
+    // The story of the video: its camera hints pick the camera of each scene.
+    final storyBeats = _storyBeats(timeline);
+
     // Reports live progress for the whole 3D phase (0..1).
     void report(
       double fraction,
@@ -653,6 +690,16 @@ class ThreeDScenePipeline {
       for (var index = 0; index < cues.length; index++) {
         final cue = cues[index];
         final sceneNumber = index + 1;
+
+        // The camera of this scene: the hint of the story beat spoken during
+        // it (enter the window = push in, arrive from it = pull out, orbit...).
+        // Without a hint the old fixed cycle decides.
+        final cameraMode = CameraHintBridge.filamentModeFor(
+          storyBeats,
+          cue.start,
+          cue.end,
+          fallback: _cameraModes[index % _cameraModes.length],
+        );
 
         onStatus?.call(
           'جاري تجهيز مشهد 3D $sceneNumber من ${cues.length} '
@@ -813,7 +860,7 @@ class ThreeDScenePipeline {
 
               await FilamentRenderer.setCameraMotion(
                 viewId: viewId,
-                mode: _cameraModes[index % _cameraModes.length],
+                mode: cameraMode,
               );
 
               finish(ThreeDStage.camera, next: ThreeDStage.ready);
