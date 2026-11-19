@@ -141,6 +141,11 @@ class DepthCameraEngine {
       value.isFinite ? value.clamp(0.0, 1.0).toDouble() : fallback;
 
   /// The path of [move] at full intensity.
+  ///
+  /// Lift sign: the layer offset is `-_liftAmp * lift`, and the canvas y axis
+  /// points DOWN. A positive lift therefore moves layers UP on screen, a
+  /// negative lift moves them DOWN. A camera that rises makes the scene sink
+  /// on screen, so crane up goes from lift +1.5 to -1.5.
   static DepthCameraPath pathFor(DepthCameraMove move) {
     switch (move) {
       case DepthCameraMove.none:
@@ -192,15 +197,15 @@ class DepthCameraEngine {
         // then sink and settle on the normal framing.
         return const DepthCameraPath(
           zoomStart: 1.12,
-          liftStart: -1.5,
-          liftEnd: 1.5,
+          liftStart: 1.5,
+          liftEnd: -1.5,
         );
       case DepthCameraMove.craneDown:
         // The camera descends and pushes in: layers start low and rise.
         return const DepthCameraPath(
           zoomEnd: 1.12,
-          liftStart: 1.5,
-          liftEnd: -1.5,
+          liftStart: -1.5,
+          liftEnd: 1.5,
         );
       case DepthCameraMove.windowIn:
         return const DepthCameraPath(zoomEnd: 1.9);
