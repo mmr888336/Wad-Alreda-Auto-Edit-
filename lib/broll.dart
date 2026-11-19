@@ -17,6 +17,12 @@ import 'settings.dart';
 ///   to smaller renditions if a download fails or exceeds the size ceiling.
 /// - Keep the existing 20 MB per-clip ceiling to protect mobile data/storage.
 ///
+/// The caller may also pass the story context of the moment the clip is for
+/// (`focus` = the main idea, `props` = the objects that belong to it). Clips
+/// whose title or tags mention those objects rank higher, so the B-roll
+/// follows the meaning of the speech and not only the words of the query.
+/// Without a context the ranking is exactly the same as before.
+///
 /// Downloads are streamed: a rendition larger than the ceiling is abandoned
 /// as soon as its size is known (or exceeded) instead of being downloaded in
 /// full first, and one fetch has a total time budget, so a slow connection
@@ -24,6 +30,14 @@ import 'settings.dart';
 class BrollFetcher {
   static const int maxClipBytes = 20 * 1024 * 1024;
   static const int _candidatePoolSize = 3;
+
+  /// Score of one story word (focus or prop) found in a clip's title or tags.
+  /// It is smaller than the score of a query word (3.0), so the story context
+  /// refines the ranking but never beats a clip that matches the query.
+  static const double _contextWeight = 1.5;
+
+  /// Most the story context can add to one clip.
+  static const double _contextMaxScore = 3.0;
 
   /// Total time one [fetch] may spend downloading (all renditions together).
   static const Duration _downloadBudget = Duration(seconds: 75);
@@ -92,6 +106,33 @@ class BrollFetcher {
         .toSet();
   }
 
+  /// Singular form used to compare story words with clip words (coins/coin).
+  static String _stem(String word) {
+    if (word.length > 3 && word.endsWith('s')) {
+      return word.substring(0, word.length - 1);
+    }
+    return word;
+  }
+
+  /// Words that describe what the speaker is talking about at the moment of a
+  /// B-roll idea: the main idea of the story beat ([focus]) and the objects
+  /// that belong to it ([props]). Asset keys such as `crumpled_paper` become
+  /// `crumpled` and `paper`. A focus of `none` (no known idea) adds nothing.
+  static Set<String> contextWords({
+    String? focus,
+    List<String> props = const <String>[],
+  }) {
+    final result = <String>{};
+    final id = focus?.trim() ?? '';
+    if (id.isNotEmpty && id != 'none') {
+      result.addAll(_words(id).map(_stem));
+    }
+    for (final prop in props) {
+      result.addAll(_words(prop).map(_stem));
+    }
+    return result;
+  }
+
   static double _topicScore(String searchableText, String query) {
     final wanted = _words(query);
     if (wanted.isEmpty) return 0;
@@ -102,6 +143,25 @@ class BrollFetcher {
     }
     // A relevant subject is more valuable than a small resolution advantage.
     return matches * 3.0;
+  }
+
+  /// Small bonus for clips whose title or tags mention the story context.
+  /// Words that are already part of the query are skipped, so nothing is
+  /// counted twice.
+  static double _contextScore(
+    String searchableText,
+    String query,
+    Set<String> context,
+  ) {
+    if (context.isEmpty) return 0;
+    final queryWords = _words(query).map(_stem).toSet();
+    final available = _words(searchableText).map(_stem).toSet();
+    var matches = 0;
+    for (final word in context) {
+      if (queryWords.contains(word)) continue;
+      if (available.contains(word)) matches++;
+    }
+    return math.min(_contextMaxScore, matches * _contextWeight);
   }
 
   static double _orientationScore({
@@ -145,8 +205,10 @@ class BrollFetcher {
     required String searchableText,
     required String query,
     required bool portrait,
+    Set<String> context = const <String>{},
   }) {
     return _topicScore(searchableText, query) +
+        _contextScore(searchableText, query, context) +
         _orientationScore(
           width: width,
           height: height,
@@ -191,12 +253,18 @@ class BrollFetcher {
 
   /// Ranks Pexels video results before choosing a video file to download.
   /// Relevance and orientation are considered before raw resolution.
+  ///
+  /// [focus] and [props] (the story context of the moment) add a small bonus
+  /// to clips that show the objects of the idea being spoken about.
   static List<Map<String, dynamic>> rankPexelsVideos(
     Iterable<dynamic> videos, {
     required String query,
     required bool portrait,
+    String? focus,
+    List<String> props = const <String>[],
   }) {
     final ranked = <_RankedVideo>[];
+    final context = contextWords(focus: focus, props: props);
     var originalIndex = 0;
 
     for (final item in videos) {
@@ -230,6 +298,7 @@ class BrollFetcher {
         searchableText: '$url ${video['image'] ?? ''}',
         query: query,
         portrait: portrait,
+        context: context,
       );
       ranked.add(
         _RankedVideo(
@@ -247,12 +316,18 @@ class BrollFetcher {
 
   /// Ranks Pixabay search hits using tags, orientation, duration and size.
   /// Unsafe results and hits without a usable video rendition are discarded.
+  ///
+  /// [focus] and [props] (the story context of the moment) add a small bonus
+  /// to hits whose tags mention the objects of the idea being spoken about.
   static List<Map<String, dynamic>> rankPixabayHits(
     Iterable<dynamic> hits, {
     required String query,
     required bool portrait,
+    String? focus,
+    List<String> props = const <String>[],
   }) {
     final ranked = <_RankedVideo>[];
+    final context = contextWords(focus: focus, props: props);
     var originalIndex = 0;
 
     for (final item in hits) {
@@ -278,6 +353,7 @@ class BrollFetcher {
         searchableText: searchableText,
         query: query,
         portrait: portrait,
+        context: context,
       );
       ranked.add(
         _RankedVideo(
@@ -408,6 +484,9 @@ class BrollFetcher {
   }
 
   /// animation=true requests a 2D animation from Pixabay (requires Pixabay key).
+  ///
+  /// [focus] and [props] are the story context of the moment the clip is for
+  /// (see StoryBeat); they only refine the ranking of the results.
   static Future<String?> fetch(
     AppSettings settings,
     String query,
@@ -415,6 +494,8 @@ class BrollFetcher {
     String outPath,
     int pick, {
     bool animation = false,
+    String? focus,
+    List<String> props = const <String>[],
   }) async {
     try {
       final encodedQuery = Uri.encodeQueryComponent(query.trim());
@@ -445,6 +526,8 @@ class BrollFetcher {
           decoded['hits'] as List,
           query: query,
           portrait: portrait,
+          focus: focus,
+          props: props,
         );
         if (ranked.isEmpty) return null;
 
@@ -472,6 +555,8 @@ class BrollFetcher {
           decoded['videos'] as List,
           query: query,
           portrait: portrait,
+          focus: focus,
+          props: props,
         );
         if (ranked.isEmpty) return null;
 
