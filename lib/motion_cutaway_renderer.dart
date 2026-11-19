@@ -24,11 +24,13 @@
 /// fails the plain scene builder is used. Inside one export the first scene
 /// of every cutaway also differs from the last scene of the cutaway before it
 /// (see [SceneLayoutMemory]), so the composition keeps changing across the
-/// whole video. Every scene also gets a depth camera (see
-/// [DepthCameraPlanner]): parallax, orbit, zoom and perspective change
-/// between layers of different depth. The camera is folded into the layer
-/// expressions, and if the camera render fails the clip is rendered again
-/// flat, so a camera problem never costs the cutaway either.
+/// whole video. Every scene also gets a depth camera, planned by the
+/// cinematic camera director (see [CinematicCameraDirector]) as one shot
+/// list in scene order (crane reveal, dolly, orbit, crane, window entry and
+/// arrival), with every shot starting where the previous one ended; the
+/// older [DepthCameraPlanner] is the fallback. The camera is folded into the
+/// layer expressions, and if the camera render fails the clip is rendered
+/// again flat, so a camera problem never costs the cutaway either.
 library;
 
 import 'dart:io';
@@ -38,6 +40,7 @@ import 'dart:typed_data';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 
+import 'cinematic_camera_director.dart';
 import 'cinematic_vfx.dart';
 import 'continuous_scene_generator.dart';
 import 'depth_camera_planner.dart';
@@ -293,15 +296,25 @@ class MotionCutawayRenderer {
         built = SceneRichnessGuard.enrich(built);
       } catch (_) {}
 
-      // Camera per scene; a planner problem only means a flat cutaway.
+      // Camera per scene, planned as one shot list in scene order across the
+      // whole export; if the director fails the older planner is tried, and a
+      // problem in both only means a flat cutaway.
       if (depthCameraEnabled) {
         try {
-          built = DepthCameraPlanner.upgrade(
+          built = CinematicCameraDirector.upgrade(
             built,
             mood: mood,
-            variant: index,
+            state: CameraDirectorMemory.stateFor(stamp),
           );
-        } catch (_) {}
+        } catch (_) {
+          try {
+            built = DepthCameraPlanner.upgrade(
+              built,
+              mood: mood,
+              variant: index,
+            );
+          } catch (_) {}
+        }
       }
 
       final clip = await renderBuilt(
