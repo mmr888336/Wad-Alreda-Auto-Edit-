@@ -10,6 +10,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'analyzer.dart';
 import 'broll.dart';
 import 'broll_relevance_guard.dart';
+import 'caption_lane_planner.dart';
 import 'caption_motion_gate.dart';
 import 'dense_cutaway_planner.dart';
 import 'settings.dart';
@@ -384,6 +385,7 @@ class Enhancer {
     required String effectStyle,
     required MotionGraphicsPlan motionPlan,
     required AppSettings settings,
+    double captionLane = 0.80,
   }) {
     const videoTrackId = 'track_video';
     const brollTrackId = 'track_broll';
@@ -430,7 +432,7 @@ class Enhancer {
 
     final captionLayers = <TimelineLayer>[];
     final captionCount = math.min(captions.length, captionFiles.length);
-    final baseY = settings.captionPosition == 'middle' ? 0.5 : 0.80;
+    final baseY = settings.captionPosition == 'middle' ? 0.5 : captionLane;
     final travel = 0.04 * (motionPlan.captionTravel / 0.48);
     final dynamicMotion = motionPlan.mood == MotionMood.dynamic;
     for (var i = 0; i < captionCount; i++) {
@@ -996,6 +998,18 @@ class Enhancer {
     }
     report(0.39);
 
+    var captionLane = CaptionLanePlanner.usualLane;
+    if (caps.isNotEmpty && s.captionPosition != 'middle') {
+      captionLane = await CaptionLanePlanner.plan(
+        videoPath: cutPath,
+        duration: cutSec,
+        directory: dir,
+      );
+      if (captionLane != CaptionLanePlanner.usualLane) {
+        notes.add('تم نقل الكابشن إلى أهدأ منطقة في الصورة لتجنب تغطية المايك أو اليدين.');
+      }
+    }
+
     onStatus?.call('جاري بناء طبقات المونتاج والحركات...');
     final timelineProject = _createTimelineProject(
       projectId: 'job_$stamp',
@@ -1012,6 +1026,7 @@ class Enhancer {
       effectStyle: s.soundEffectStyle,
       motionPlan: motionPlan,
       settings: s,
+      captionLane: captionLane,
     );
     final timelineErrors = timelineProject.validate();
     if (timelineErrors.isNotEmpty) {
@@ -1063,6 +1078,25 @@ class Enhancer {
         // graded). The grade is skipped in the fallback export (visFx false).
         final isMotionClip = layer.sourcePath!.contains('motion_scene_');
         chains.add('[$idx:v]${motionPlan.brollInputFilter(width: outW, height: outH, start: layer.start, end: layer.end, unifiedGrade: visFx && !isMotionClip)}[bv$idx]');
+        // Zoom-through: the speaker shot punches in during the quarter second
+        // before a motion scene appears, so the scene seems to be entered
+        // through the shot instead of cutting to it. Fallback exports skip it.
+        if (visFx && s.visualEffects && isMotionClip && layer.start >= 0.35) {
+          final a = layer.start - 0.22;
+          final pz = 'zt$idx';
+          final zoomExpr = '(1+0.18*clip(t/0.22,0,1))';
+          chains.add('[$cur]split[${pz}a][${pz}b]');
+          chains.add(
+            '[${pz}b]trim=start=${_f(a)}:end=${_f(layer.start)},setpts=PTS-STARTPTS,'
+            "scale=w='$outW*$zoomExpr':h='$outH*$zoomExpr':eval=frame:flags=bicubic,"
+            'crop=$outW:$outH,setsar=1,setpts=PTS+${_f(a)}/TB[${pz}c]',
+          );
+          final zo = next();
+          chains.add(
+            "[${pz}a][${pz}c]overlay=x=0:y=0:eof_action=pass:enable='between(t,${_f(a)},${_f(layer.start)})'[$zo]",
+          );
+          cur = zo;
+        }
         final o = next();
         chains.add("[$cur][bv$idx]overlay=x=0:y=0:enable='between(t,${_f(layer.start)},${_f(layer.end)})'[$o]");
         cur = o;
