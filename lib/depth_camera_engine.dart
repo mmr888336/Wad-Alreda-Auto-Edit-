@@ -13,6 +13,14 @@
 ///  * window: the camera dives into the subject (and arrives zoomed in);
 ///  * dolly zoom: the perspective changes (far layers grow, near ones shrink).
 ///
+/// Living camera ([breathing]): the ease of a move is zero-speed at both ends,
+/// so a camera that only follows it stops dead at every cut and the picture
+/// feels frozen between moves. On top of the move the camera therefore gets a
+/// very small, slow handheld drift (a fraction of a percent of the canvas,
+/// larger for near layers). The drift is exactly zero at the start and at the
+/// end of a scene, so cuts and the framing that scenes hand to each other do
+/// not change, but the camera is still moving when the cut happens.
+///
 /// The same maths drives the FFmpeg renderer ([expressions]) and the editor
 /// preview ([transformState]), so the preview matches the export.
 /// Pure Dart, no I/O.
@@ -56,7 +64,8 @@ class CameraSample {
   /// Zoom about the focus point, applied to the layer position offset.
   final double zoom;
 
-  /// Extra offset (normalised canvas units) from orbit, parallax and lift.
+  /// Extra offset (normalised canvas units) from orbit, parallax, lift and
+  /// the handheld drift.
   final double dx;
   final double dy;
 
@@ -92,11 +101,15 @@ class _Coeffs {
   // zoom = 1 + zk0 + zk1 * e
   final double zk0;
   final double zk1;
-  // dx = dx0 + dx1 * e, dy = dy0 + dy1 * e
+  // dx = dx0 + dx1 * e + bx * sin(2*PI*p)
+  // dy = dy0 + dy1 * e + by * sin(4*PI*p)
   final double dx0;
   final double dx1;
   final double dy0;
   final double dy1;
+  // handheld drift amplitudes (0 when [DepthCameraEngine.breathing] is off)
+  final double bx;
+  final double by;
   // scaleMul = 1 + m1 * e
   final double m1;
 
@@ -107,6 +120,8 @@ class _Coeffs {
     required this.dx1,
     required this.dy0,
     required this.dy1,
+    required this.bx,
+    required this.by,
     required this.m1,
   });
 }
@@ -124,8 +139,16 @@ class DepthCameraEngine {
   static const double _liftAmp = 0.05;
   static const double _depthFloor = 0.2;
 
+  // Handheld drift (normalised canvas units at intensity 1 and depth 1).
+  static const double _breathX = 0.006;
+  static const double _breathY = 0.004;
+
   /// Largest overscan given to a full-canvas background layer.
   static const double maxCoverScale = 1.8;
+
+  /// Master switch of the handheld drift. When false the camera is exactly the
+  /// plain move (the behaviour before the living camera).
+  static bool breathing = true;
 
   static String _n(double value) => value.toStringAsFixed(3);
 
@@ -235,6 +258,7 @@ class DepthCameraEngine {
     final panK = -_panAmp * i * depthFactor;
     final liftK = -_liftAmp * i * depthFactor;
     final orbitSpan = path.orbitEnd - path.orbitStart;
+    final breathK = breathing ? i * depthFactor : 0.0;
 
     return _Coeffs(
       zk0: zoomFactor * (z0 - 1),
@@ -244,6 +268,8 @@ class DepthCameraEngine {
       dy0: orbitK * _orbitLift * path.orbitStart + liftK * path.liftStart,
       dy1: orbitK * _orbitLift * orbitSpan +
           liftK * (path.liftEnd - path.liftStart),
+      bx: _breathX * breathK,
+      by: _breathY * breathK,
       m1: path.dolly * i * (1 - 2 * d),
     );
   }
@@ -257,10 +283,13 @@ class DepthCameraEngine {
   }) {
     final c = _coeffs(camera, depth);
     final e = ease(progress);
+    final p = progress.isNaN ? 0.0 : progress.clamp(0.0, 1.0).toDouble();
+    final driftX = c.bx * math.sin(2 * math.pi * p);
+    final driftY = c.by * math.sin(4 * math.pi * p);
     return CameraSample(
       zoom: 1 + c.zk0 + c.zk1 * e,
-      dx: c.dx0 + c.dx1 * e,
-      dy: c.dy0 + c.dy1 * e,
+      dx: c.dx0 + c.dx1 * e + driftX,
+      dy: c.dy0 + c.dy1 * e + driftY,
       scaleMul: 1 + c.m1 * e,
     );
   }
@@ -340,7 +369,8 @@ class DepthCameraEngine {
   }
 
   /// Size factor that keeps a full-canvas background layer covering the whole
-  /// canvas for the entire move, so its edges never show.
+  /// canvas for the entire move, so its edges never show. The margin also
+  /// covers the handheld drift between the sampled points.
   static double coverScale(SceneCamera camera, double depth) {
     if (!camera.isActive) return 1.0;
     final fx = _focus(camera.focusX, 0.5);
@@ -355,7 +385,8 @@ class DepthCameraEngine {
       final need = (1 + 2 * shift) / size;
       if (need > worst) worst = need;
     }
-    return (worst + 0.02).clamp(1.0, maxCoverScale).toDouble();
+    final margin = breathing ? 0.04 : 0.02;
+    return (worst + margin).clamp(1.0, maxCoverScale).toDouble();
   }
 
   /// FFmpeg expressions that apply the scene camera to one layer.
@@ -381,10 +412,14 @@ class DepthCameraEngine {
     final zoom = '(1+${_num(c.zk0)}+${_num(c.zk1)}*$e)';
     final fx = _num(_focus(camera.focusX, 0.5));
     final fy = _num(_focus(camera.focusY, 0.42));
+    final driftX =
+        breathing ? '+${_num(c.bx)}*sin(2*PI*$progress)' : '';
+    final driftY =
+        breathing ? '+${_num(c.by)}*sin(4*PI*$progress)' : '';
     final x =
-        '($fx+(($xExpr)-$fx)*$zoom+(${_num(c.dx0)}+${_num(c.dx1)}*$e))';
+        '($fx+(($xExpr)-$fx)*$zoom+(${_num(c.dx0)}+${_num(c.dx1)}*$e$driftX))';
     final y =
-        '($fy+(($yExpr)-$fy)*$zoom+(${_num(c.dy0)}+${_num(c.dy1)}*$e))';
+        '($fy+(($yExpr)-$fy)*$zoom+(${_num(c.dy0)}+${_num(c.dy1)}*$e$driftY))';
     final cover = fullBleed ? '*${_num(coverScale(camera, depth))}' : '';
     final scale = '(($scaleExpr)*$zoom*(1+${_num(c.m1)}*$e)$cover)';
     return LayerCameraExpressions(x: x, y: y, scale: scale);
