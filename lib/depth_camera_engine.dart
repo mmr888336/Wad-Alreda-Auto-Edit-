@@ -8,6 +8,9 @@
 ///    around the focus plane (depth 0.5);
 ///  * parallax: the camera trucks sideways, near layers travel farther;
 ///  * rise / sink: the same idea on the vertical axis;
+///  * crane: the camera rises (or descends) while it pulls back (or pushes
+///    in), the way a crane shot reveals a scene;
+///  * window: the camera dives into the subject (and arrives zoomed in);
 ///  * dolly zoom: the perspective changes (far layers grow, near ones shrink).
 ///
 /// The same maths drives the FFmpeg renderer ([expressions]) and the editor
@@ -184,6 +187,25 @@ class DepthCameraEngine {
           liftStart: 0.5,
           liftEnd: -0.5,
         );
+      case DepthCameraMove.craneUp:
+        // The camera rises and pulls back: layers start high and zoomed in,
+        // then sink and settle on the normal framing.
+        return const DepthCameraPath(
+          zoomStart: 1.12,
+          liftStart: -1.5,
+          liftEnd: 1.5,
+        );
+      case DepthCameraMove.craneDown:
+        // The camera descends and pushes in: layers start low and rise.
+        return const DepthCameraPath(
+          zoomEnd: 1.12,
+          liftStart: 1.5,
+          liftEnd: -1.5,
+        );
+      case DepthCameraMove.windowIn:
+        return const DepthCameraPath(zoomEnd: 1.9);
+      case DepthCameraMove.windowOut:
+        return const DepthCameraPath(zoomStart: 1.9);
     }
   }
 

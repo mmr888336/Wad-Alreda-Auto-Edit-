@@ -49,6 +49,14 @@ class DepthCameraPanel extends StatefulWidget {
         return rtl ? 'تغيّر المنظور' : 'Dolly zoom';
       case DepthCameraMove.spiralIn:
         return rtl ? 'حلزوني' : 'Spiral in';
+      case DepthCameraMove.craneUp:
+        return rtl ? 'كرين للأعلى' : 'Crane up';
+      case DepthCameraMove.craneDown:
+        return rtl ? 'كرين للأسفل' : 'Crane down';
+      case DepthCameraMove.windowIn:
+        return rtl ? 'دخول النافذة' : 'Enter window';
+      case DepthCameraMove.windowOut:
+        return rtl ? 'الخروج من النافذة' : 'Exit window';
     }
   }
 

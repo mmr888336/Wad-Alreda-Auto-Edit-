@@ -4,6 +4,10 @@
 /// scene gets the complementary move (push in is followed by an orbit, an
 /// orbit by the opposite orbit, a spiral by a pull out...), so the
 /// perspective changes between scenes instead of repeating. Pure Dart.
+///
+/// The renderer plans the camera with the cinematic director (see
+/// CinematicCameraDirector), which follows the scene order of the whole
+/// video; this planner stays as its fallback.
 library;
 
 import 'depth_camera_model.dart';
@@ -89,6 +93,14 @@ class DepthCameraPlanner {
         return DepthCameraMove.pullOut;
       case DepthCameraMove.spiralIn:
         return DepthCameraMove.pullOut;
+      case DepthCameraMove.craneUp:
+        return DepthCameraMove.craneDown;
+      case DepthCameraMove.craneDown:
+        return DepthCameraMove.craneUp;
+      case DepthCameraMove.windowIn:
+        return DepthCameraMove.windowOut;
+      case DepthCameraMove.windowOut:
+        return DepthCameraMove.pushIn;
     }
   }
 
