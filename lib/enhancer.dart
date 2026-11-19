@@ -9,6 +9,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'analyzer.dart';
 import 'broll.dart';
+import 'broll_relevance_guard.dart';
 import 'caption_motion_gate.dart';
 import 'dense_cutaway_planner.dart';
 import 'settings.dart';
@@ -779,12 +780,22 @@ class Enhancer {
         try {
           final ideas = analysis.broll
               .where((b) => b.start >= 3.5 && b.end <= cutSec - 0.3 && b.end - b.start >= 1.5)
-              .toList()..sort((a, b) => a.start.compareTo(b.start));
+              .toList();
+          // Vague phrases ("kitchen") give unrelated stock clips (a fried egg);
+          // only concrete ideas are searched, and only a few of them.
+          final concrete = BrollRelevanceGuard.filter(ideas);
+          if (concrete.length < ideas.length) {
+            notes.add('تم استبعاد ${ideas.length - concrete.length} اقتراح B-roll عام أو غير مرتبط بالكلام.');
+          }
+          ideas
+            ..clear()
+            ..addAll(concrete)
+            ..sort((a, b) => a.start.compareTo(b.start));
           final brollDeadline = DateTime.now().add(_brollBudget);
           var lastEnd = 0.0;
           var index = 0;
           for (final idea in ideas) {
-            if (brolls.length >= editingProfile.maxBroll) break;
+            if (brolls.length >= math.min(editingProfile.maxBroll, BrollRelevanceGuard.maxClips)) break;
             if (idea.start < lastEnd + 1.0) continue;
             _checkCancel();
             if (DateTime.now().isAfter(brollDeadline)) {

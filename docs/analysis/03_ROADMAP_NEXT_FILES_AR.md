@@ -20,3 +20,10 @@
 - مربوط في `MotionCutawayRenderer.render` قبل `DepthCameraPlanner`؛ أي خطأ = المشهد يبقى كما بُني.
 - للإيقاف: `SceneRichnessGuard.enabled = false`.
 - المتبقي من الدفعة 2 (شخصية ثابتة + انتقال match-cut من لقطة الشخص) يحتاج لمس `reference_scene_builder.dart` (778 سطر) و`enhancer.dart` وسيأتي في الدفعة 2ب.
+
+---
+## الدفعة 3 (جاهزة): `broll_relevance_guard.dart`
+- يستبعد اقتراحات B-roll العامة ("kitchen", "man in room"...) لأنها سبب مقطع البيضة المقلية؛ يبقي فقط ما فيه كلمتان محددتان فأكثر ومدته 1.8 ث فأكثر.
+- حد أقصى 3 مقاطع مخزون في الفيديو (مشاهد الموشن تحمل القصة البصرية).
+- مربوط في `enhancer.dart` (فلترة الأفكار + الحد)، وملاحظة تظهر في تقرير التصدير بعدد المستبعد.
+- للإيقاف: `BrollRelevanceGuard.enabled = false`.
