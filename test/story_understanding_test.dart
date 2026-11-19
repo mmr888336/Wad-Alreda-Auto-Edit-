@@ -1,0 +1,93 @@
+import 'package:auto_edit/depth_camera_model.dart';
+import 'package:auto_edit/motion_transitions.dart';
+import 'package:auto_edit/story_understanding.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+StorySegment _seg(String text, double start, double end) =>
+    StorySegment(text: text, start: start, end: end);
+
+void main() {
+  group('normalize', () {
+    test('unifies Arabic spellings and removes diacritics', () {
+      expect(
+        StoryUnderstanding.normalize('\u0628\u064E\u0631\u064E\u0643\u064E\u0629'),
+        '\u0628\u0631\u0643\u0647',
+      );
+      expect(StoryUnderstanding.normalize('Money'), 'money');
+    });
+  });
+
+  group('understanding', () {
+    test('a blessing sentence becomes a calm room with its own props', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('سر البركة والخير في حياة الناس', 5, 7.6),
+      ]);
+      final beat = plan.beats.single;
+      expect(beat.focus, 'blessing');
+      expect(beat.environment, StoryEnvironment.room);
+      expect(beat.mood, StoryMood.calm);
+      expect(beat.effectWord, 'البركة');
+      expect(beat.props.length, 3);
+      expect(beat.props.first, 'lantern');
+      expect(beat.shot, StoryShotKind.establishing);
+    });
+
+    test('money goes to the office, English works too', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('الفلوس مهمة جدا', 0, 3),
+        _seg('learn from a good book', 3, 6),
+      ]);
+      expect(plan.beats[0].focus, 'money');
+      expect(plan.beats[0].environment, StoryEnvironment.office);
+      expect(plan.beats[0].effectWord, 'الفلوس');
+      expect(plan.beats[1].focus, 'knowledge');
+      expect(plan.beats[1].environment, StoryEnvironment.library);
+      expect(plan.beats[1].effectWord, 'learn');
+    });
+
+    test('a sentence without a known idea keeps the previous world', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('الفلوس مهمة', 0, 3),
+        _seg('وبعدين نكمل الكلام', 3, 6),
+      ]);
+      expect(plan.beats[1].focus, 'none');
+      expect(plan.beats[1].environment, StoryEnvironment.office);
+      expect(plan.beats[1].props, isEmpty);
+      expect(plan.beats[1].effectWord, isNotEmpty);
+    });
+  });
+
+  group('transitions', () {
+    test('a new world is entered through the window', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('الفلوس مهمة', 0, 3),
+        _seg('البركة والخير', 3, 6),
+      ]);
+      expect(plan.beats[0].windowToNext, isTrue);
+      expect(plan.beats[0].transitionToNext, MotionTransitionKind.zoomSmash);
+      expect(plan.beats[0].cameraHint, DepthCameraMove.windowIn);
+      expect(plan.beats[1].shot, StoryShotKind.reveal);
+      expect(plan.beats[1].cameraHint, DepthCameraMove.windowOut);
+      expect(plan.beats[1].windowToNext, isFalse);
+      expect(plan.beats[1].transitionToNext, MotionTransitionKind.hardCut);
+    });
+
+    test('short beats do not dive, they whip', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('الفلوس مهمة', 0, 1.0),
+        _seg('البركة والخير', 1.0, 2.0),
+      ]);
+      expect(plan.beats[0].windowToNext, isFalse);
+      expect(plan.beats[0].transitionToNext, MotionTransitionKind.whipPan);
+    });
+
+    test('same world gives a match cut', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('الفلوس مهمة', 0, 3),
+        _seg('والتجارة كمان', 3, 6),
+      ]);
+      expect(plan.beats[0].environment, plan.beats[1].environment);
+      expect(plan.beats[0].transitionToNext, MotionTransitionKind.matchCut);
+    });
+  });
+}
