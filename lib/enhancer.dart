@@ -22,6 +22,7 @@ import 'reference_scene_builder.dart';
 import 'timeline_engine.dart';
 import 'sound_effect_generator.dart';
 import 'silence_cutter.dart';
+import 'story_understanding.dart' show StorySegment, StoryUnderstanding;
 import 'text_render.dart';
 import 'caption_style_engine.dart';
 import 'visual_filter_engine.dart';
@@ -783,9 +784,19 @@ class Enhancer {
           final ideas = analysis.broll
               .where((b) => b.start >= 3.5 && b.end <= cutSec - 0.3 && b.end - b.start >= 1.5)
               .toList();
-          // Vague phrases ("kitchen") give unrelated stock clips (a fried egg);
-          // only concrete ideas are searched, and only a few of them.
-          final concrete = BrollRelevanceGuard.filter(ideas);
+          // Vague phrases ("kitchen") give unrelated stock clips (a fried egg).
+          // Each idea is judged against what the speaker is saying at that
+          // moment (focus and props of the story beat), not by its words alone;
+          // only related ideas are searched, and only a few of them.
+          final storyBeats = StoryUnderstanding.plan(<StorySegment>[
+            for (final caption in analysis.captions)
+              StorySegment(
+                text: caption.text,
+                start: caption.start,
+                end: caption.end,
+              ),
+          ]).beats;
+          final concrete = BrollRelevanceGuard.filterWithStory(ideas, storyBeats);
           if (concrete.length < ideas.length) {
             notes.add('تم استبعاد ${ideas.length - concrete.length} اقتراح B-roll عام أو غير مرتبط بالكلام.');
           }
