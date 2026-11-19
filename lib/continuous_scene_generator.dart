@@ -27,6 +27,13 @@
 /// are replaced by them (a main sprite that is the mascot itself is replaced
 /// by the character too). [worldEnabled] switches this off.
 ///
+/// Story camera: the same story also gives every beat a camera hint (push in,
+/// orbit, enter the window...). The hint becomes the depth camera of the
+/// scene (see [CameraHintBridge]), so the camera follows the meaning and the
+/// order of the story instead of a fixed cycle. Scenes that get no camera here
+/// are planned later by the cinematic director, as before.
+/// [CameraHintBridge.enabled] switches this off.
+///
 /// Directed text: from the SAME story, [DirectedText] decides which word of a
 /// beat is the effect word (the idea of the sentence, not just the longest
 /// word). That word becomes the impact word of the scene, and a word is never
@@ -38,6 +45,8 @@ library;
 
 import 'dart:math' as math;
 
+import 'camera_hint_bridge.dart';
+import 'depth_camera_model.dart' show SceneCamera;
 import 'directed_text.dart' show DirectedText;
 import 'motion_graphics.dart' show MotionMood;
 import 'motion_scene_editing.dart';
@@ -813,6 +822,8 @@ class ContinuousSceneGenerator {
     final world = _planWorld(chunks, sceneDur);
     final accents = _accentWords(world);
     var lastShown = '';
+    // The camera this method gave to the scene before (see CameraHintBridge).
+    SceneCamera? lastCamera;
 
     final scenes = <MotionScene>[];
     final assets = <String, SceneAssetSpec>{};
@@ -911,16 +922,33 @@ class ContinuousSceneGenerator {
           }
         }
 
-        scenes.add(
-          MotionScene(
-            id: scene.id,
-            start: sceneStart,
-            end: sceneEnd,
-            background: background,
-            transitionIn: (i > 0 && si == 0) ? kinds[i - 1] : scene.transitionIn,
-            layers: sceneLayers,
-          ),
+        final built = MotionScene(
+          id: scene.id,
+          start: sceneStart,
+          end: sceneEnd,
+          background: background,
+          transitionIn: (i > 0 && si == 0) ? kinds[i - 1] : scene.transitionIn,
+          layers: sceneLayers,
         );
+
+        // Story camera: the camera hint of the beat becomes the depth camera
+        // of its first scene. Any other scene (or a story that could not be
+        // planned) gets no camera here; the director plans it later.
+        SceneCamera? camera;
+        final beats = world?.story.beats;
+        if (si == 0 && beats != null && i < beats.length) {
+          camera = CameraHintBridge.cameraFor(
+            scene: built,
+            hint: beats[i].cameraHint,
+            mood: mood,
+            previous: lastCamera,
+            hasNext:
+                i < chunks.length - 1 || si < chunk.project.scenes.length - 1,
+            isFirst: scenes.isEmpty,
+          );
+        }
+        lastCamera = camera;
+        scenes.add(camera == null ? built : built.withCamera(camera));
       }
       cursor += chunk.project.duration;
     }
