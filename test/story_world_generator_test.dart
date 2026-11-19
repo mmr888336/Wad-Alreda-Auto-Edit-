@@ -21,7 +21,7 @@ Map<String, MotionRenderAsset> _assetsFor(ReferenceSceneResult result) {
 
 void main() {
   group('StoryWorldBridge.renderingOf', () {
-    test('keeps the backdrop, the fixed character and props with art', () {
+    test('keeps the backdrop, set pieces, character and props with art', () {
       final plan = StoryWorldBridge.plan(const <StorySegment>[
         StorySegment(text: 'الفلوس مهمة', start: 0, end: 3),
       ]);
@@ -35,7 +35,10 @@ void main() {
       final ids = rendering.layers.map((l) => l.id).toList();
       expect(ids, contains('s0_w0_backdrop'));
       expect(ids, contains('s0_w0_hero'));
-      expect(ids.any((id) => id.contains('_set')), isFalse);
+      expect(
+        ids,
+        containsAll(<String>['s0_w0_set0', 's0_w0_set1', 's0_w0_set2']),
+      );
       for (final layer in rendering.layers) {
         expect(rendering.assets.containsKey(layer.assetKey), isTrue);
         expect(layer.start, 0);
@@ -50,8 +53,16 @@ void main() {
         rendering.assets['bg:office']!.kind,
         SceneAssetKind.background,
       );
+      expect(rendering.assets['decor:desk']!.spriteKey, 'set:desk');
+      final desk = rendering.layers.singleWhere((l) => l.id == 's0_w0_set0');
+      expect(desk.zIndex, StoryWorldBridge.setPieceZ);
+      expect(desk.scale, 1.0);
       expect(
-        rendering.assets.values.any((a) => a.kind == SceneAssetKind.visual),
+        rendering.assets.values.any(
+          (a) =>
+              a.kind == SceneAssetKind.visual &&
+              !(a.spriteKey ?? '').startsWith('set:'),
+        ),
         isTrue,
       );
     });
@@ -92,6 +103,7 @@ void main() {
         expect(heroes.first.y, 0.62);
         expect(heroes.first.scale, 0.42);
         expect(scene.layers.any((l) => l.id.endsWith('_decor')), isFalse);
+        expect(scene.layers.any((l) => l.id.contains('_set')), isTrue);
         for (final layer in scene.layers) {
           if (!layer.id.endsWith('_sprite')) continue;
           final spec = plan.result.assets[layer.assetKey];

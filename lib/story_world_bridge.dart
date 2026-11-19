@@ -10,10 +10,11 @@
 /// with its own depth for the depth camera.
 ///
 /// [StoryWorldBridge.renderingOf] goes one step further: it keeps only the
-/// world layers the renderer can draw today (backdrop, the fixed character
-/// and the props that have a library picture) and creates the asset of each
-/// one, so a scene generator can merge them into its own scenes. Set pieces
-/// (desk, window, ...) have no art yet and are left out.
+/// world layers the renderer can draw today (backdrop, the set pieces of the
+/// environment, the fixed character and the props that have a library
+/// picture) and creates the asset of each one, so a scene generator can merge
+/// them into its own scenes. A set piece is a full-canvas picture drawn by
+/// [WorldSetPieces]; its asset is a `visual` asset with the id `set:<name>`.
 ///
 /// Pure Dart, no I/O.
 library;
@@ -25,6 +26,7 @@ import 'motion_visual_library.dart' show MotionVisualLibrary;
 import 'reference_scene_builder.dart'
     show ReferenceSceneBuilder, SceneAssetKind, SceneAssetSpec;
 import 'story_understanding.dart';
+import 'world_set_pieces.dart';
 
 /// The story of a video and the world planned from it.
 class StoryWorldPlan {
@@ -86,9 +88,12 @@ class StoryWorldBridge {
     'warning': 'warning',
   };
 
-  /// Stacking order of the world art inside a merged scene: below the scene's
-  /// own subject (10) and words (20+).
+  /// Stacking order of the world art inside a merged scene: the set pieces
+  /// sit right above the backdrop and below the atmosphere overlays (2); the
+  /// props and the character are below the scene's own subject (10) and
+  /// words (20+).
   static const int backdropZ = 0;
+  static const int setPieceZ = 1;
   static const int propBehindZ = 6;
   static const int heroZ = 8;
   static const int propFrontZ = 9;
@@ -158,8 +163,13 @@ class StoryWorldBridge {
     return 0xFF000000 | (channel(16) << 16) | (channel(8) << 8) | channel(0);
   }
 
+  /// A `decor:` layer of scale 0.9 or more is a set piece (full canvas);
+  /// a smaller one is a prop that sits in a slot.
+  static bool _isSetPiece(WorldLayerSpec spec) =>
+      spec.assetKey.startsWith('decor:') && spec.scale >= 0.9;
+
   /// The asset the renderer must draw for [spec], or null when there is no
-  /// art for it yet (set pieces, props without a library picture).
+  /// art for it (a set piece without art, a prop without a library picture).
   static SceneAssetSpec? _assetFor(WorldLayerSpec spec, String backdropHex) {
     final key = spec.assetKey;
     if (key.startsWith('bg:')) {
@@ -178,10 +188,17 @@ class StoryWorldBridge {
         widthFraction: 1.0,
       );
     }
-    // Set pieces are full-canvas layers (scale 1) and have no art yet; props
-    // are small and sit in a slot.
-    if (key.startsWith('decor:') && spec.scale < 0.9) {
-      final id = propVisuals[key.substring('decor:'.length)];
+    if (key.startsWith('decor:')) {
+      final name = key.substring('decor:'.length);
+      if (_isSetPiece(spec)) {
+        if (!WorldSetPieces.has(name)) return null;
+        return SceneAssetSpec(
+          kind: SceneAssetKind.visual,
+          spriteKey: WorldSetPieces.idOf(name),
+          widthFraction: 1.0,
+        );
+      }
+      final id = propVisuals[name];
       if (id == null || MotionVisualLibrary.byId(id) == null) return null;
       return SceneAssetSpec(
         kind: SceneAssetKind.visual,
@@ -196,6 +213,7 @@ class StoryWorldBridge {
     final key = spec.assetKey;
     if (key.startsWith('bg:')) return backdropZ;
     if (key.startsWith('sprite:')) return heroZ;
+    if (_isSetPiece(spec)) return setPieceZ;
     return spec.depth > WorldCharacter.depth ? propFrontZ : propBehindZ;
   }
 

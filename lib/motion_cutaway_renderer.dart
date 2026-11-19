@@ -9,7 +9,8 @@
 /// the clip re-rendered through [renderBuilt].
 ///
 /// Besides pixel sprites, words and backgrounds the renderer draws semantic
-/// library visuals and transparent VFX overlays (procedural PNGs), and
+/// library visuals, the full-canvas set pieces of the story world (see
+/// [WorldSetPieces]) and transparent VFX overlays (procedural PNGs), and
 /// applies the cinematic look stored in the project's `look` asset as a
 /// post-grade. The overlays move (see [MotionVfxAnimator]: smoke rises,
 /// embers climb, rays sweep...), light-type overlays are screen-blended, and
@@ -55,6 +56,7 @@ import 'reference_scene_builder.dart';
 import 'scene_layout_memory.dart';
 import 'scene_richness_guard.dart';
 import 'text_render.dart';
+import 'world_set_pieces.dart';
 
 class MotionCutawayClip {
   final String path;
@@ -402,8 +404,38 @@ class MotionCutawayRenderer {
             widthFraction: asset.widthFraction,
           );
         } else if (asset.kind == SceneAssetKind.visual) {
-          // Semantic library illustration; a failure only skips this layer.
+          // Semantic library illustration, or a full-canvas set piece of the
+          // story world (`set:<name>`); a failure only skips this layer.
           final visualId = asset.spriteKey ?? '';
+          final setName = WorldSetPieces.nameOf(visualId);
+          if (setName != null) {
+            if (!WorldSetPieces.has(setName)) continue;
+            try {
+              final cached = visualPaths[visualId];
+              final setPath =
+                  cached ?? '$dir/mot_${stamp}_${index}_set_$setName.png';
+              if (cached == null) {
+                await File(setPath).writeAsBytes(
+                  await WorldSetPieces.renderPng(
+                    setName,
+                    width: mw,
+                    height: mh,
+                  ),
+                  flush: true,
+                );
+                temps.add(setPath);
+                visualPaths[visualId] = setPath;
+              }
+              assets[key] = MotionRenderAsset(
+                path: setPath,
+                aspect: mh / mw,
+                widthFraction: asset.widthFraction,
+              );
+            } catch (_) {
+              continue;
+            }
+            continue;
+          }
           if (MotionVisualLibrary.byId(visualId) == null) continue;
           try {
             final cached = visualPaths[visualId];
