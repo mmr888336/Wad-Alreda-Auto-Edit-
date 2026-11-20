@@ -18,6 +18,7 @@ import 'person_tracking_service.dart';
 import 'scene_frame_guard.dart';
 import 'settings.dart';
 import 'story_understanding.dart' show StoryBeat, StorySegment;
+import 'story_world_bridge.dart' show StoryWorldBridge, StoryWorldPlan;
 import 'three_d_asset_service.dart';
 import 'three_d_crash_guard.dart';
 import 'three_d_progress.dart';
@@ -62,20 +63,28 @@ class _ThreeDCue {
 /// Automatic 3D scene pipeline:
 /// - Reads real caption timestamps.
 /// - Creates scene windows.
-/// - Turns the spoken words into English search keywords.
-/// - Searches and downloads GLB assets (with a built-in safety net).
-/// - Loads each asset into the native Filament renderer.
+/// - Plans the story world once ([StoryWorldBridge]) and, for every scene
+///   window, builds its [WorldScene] and [MotionScene] and renders the 3D
+///   WORLD through the render router ([renderWorldScene]): plan, GLB,
+///   inspection, Filament load, manual camera, capture. A scene whose world
+///   fails goes back to the 2.5D engine.
+/// - Only when the world path is not available for a scene (no story, the
+///   switch [worldRenderingEnabled] is off) it falls back to the old path:
+///   turns the spoken words into English search keywords, searches and
+///   downloads GLB assets (with a built-in safety net) and loads each asset
+///   into the native Filament renderer.
 /// - Captures camera movement. The camera of each scene follows the story:
 ///   the captions are read as a story and the camera hint of the beat spoken
-///   during the scene picks the native camera mode (see [CameraHintBridge]);
-///   a scene without a hint keeps the old fixed cycle.
+///   during the scene picks the camera (see [CameraHintBridge]); a scene
+///   without a hint keeps the old fixed cycle.
 /// - Tracks the main person (Phase 1) and anchors each 3D scene to them
 ///   (Phase 2); scenes that cannot be anchored keep the old panel.
 /// - Composites rendered scenes into the exported video.
 ///
 /// Every stage of every scene is logged (see [ThreeDExportSummary]): search,
 /// download, GLB inspection, Filament load, camera, readiness, capture,
-/// renderer release and compositing. Both the START and the END of each stage
+/// renderer release and compositing (and, for a world scene, plan, GLB and
+/// manual camera). Both the START and the END of each stage
 /// are written, so a crash shows exactly which stage was running. A failed
 /// attempt is reported with the stage it failed in, so a problem is never
 /// blamed on the wrong step. The log of the latest export is kept in
@@ -92,11 +101,6 @@ class _ThreeDCue {
 /// as the last scene is captured the pipeline calls `onRenderingDone`, so the
 /// screen can release the view (GPU memory and heat) before person tracking
 /// and compositing start.
-///
-/// World scenes ([renderWorldScene]) go through the render router: the story
-/// world is planned, written as a GLB, inspected, loaded, the native camera is
-/// set to manual and the scene is captured; any failure returns the scene to
-/// the 2.5D engine.
 class ThreeDScenePipeline {
   ThreeDScenePipeline._();
 
@@ -125,6 +129,12 @@ class ThreeDScenePipeline {
   /// When no library has a model for a scene, use a neutral built-in model
   /// instead of leaving the scene without 3D.
   static bool genericFallbackEnabled = true;
+
+  /// Master switch of the world path. When true, every scene that has a story
+  /// world is rendered through [renderWorldScene] (and goes back to 2.5D if
+  /// that fails) instead of searching and downloading a library model. When
+  /// false the whole export behaves exactly as before.
+  static bool worldRenderingEnabled = true;
 
   /// Stage log of the most recent [apply] call (also when it ended early).
   static ThreeDExportSummary? lastExportSummary;
@@ -189,11 +199,17 @@ class ThreeDScenePipeline {
   static int relevanceScore(String title, String query) =>
       _relevanceScore(title, query);
 
-  /// The story of the video, read from the caption layers of [project]: one
-  /// segment per caption, in time order. Its beats carry the camera hints
-  /// that pick the camera of each 3D scene. Empty when there are no captions
-  /// or the story cannot be planned (every scene then keeps the fixed cycle).
-  static List<StoryBeat> _storyBeats(TimelineProject project) {
+  /// Test hook: the story beat that [start]..[end] overlaps the most.
+  @visibleForTesting
+  static StoryBeat? debugBeatFor(
+    List<StoryBeat> beats,
+    double start,
+    double end,
+  ) =>
+      _beatFor(beats, start, end);
+
+  /// The caption layers of [project] as story segments, in time order.
+  static List<StorySegment> _captionSegments(TimelineProject project) {
     final captions = project
         .layersOfType(TimelineLayerType.caption)
         .where(
@@ -206,14 +222,61 @@ class ThreeDScenePipeline {
         .toList()
       ..sort((a, b) => a.start.compareTo(b.start));
 
-    return CameraHintBridge.beatsOf(<StorySegment>[
+    return <StorySegment>[
       for (final layer in captions)
         StorySegment(
           text: layer.text!.trim(),
           start: layer.start,
           end: layer.end,
         ),
-    ]);
+    ];
+  }
+
+  /// The story of the video, read from the caption layers of [project]: one
+  /// segment per caption, in time order. Its beats carry the camera hints
+  /// that pick the camera of each 3D scene. Empty when there are no captions
+  /// or the story cannot be planned (every scene then keeps the fixed cycle).
+  static List<StoryBeat> _storyBeats(TimelineProject project) {
+    return CameraHintBridge.beatsOf(_captionSegments(project));
+  }
+
+  /// The story and the 3D world planned once for the whole video, or null
+  /// when the world path is off, there are no captions or the story cannot be
+  /// planned (every scene then keeps the old library path).
+  static StoryWorldPlan? _worldPlan(TimelineProject project) {
+    if (!worldRenderingEnabled) return null;
+
+    final segments = _captionSegments(project);
+    if (segments.isEmpty) return null;
+
+    try {
+      final plan = StoryWorldBridge.plan(segments);
+      return plan.story.beats.isEmpty ? null : plan;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The beat that overlaps the time range [start]..[end] the most, or null.
+  static StoryBeat? _beatFor(
+    List<StoryBeat> beats,
+    double start,
+    double end,
+  ) {
+    StoryBeat? best;
+    var bestOverlap = 0.0;
+
+    for (final beat in beats) {
+      final overlap = math.min(end, beat.segment.end) -
+          math.max(start, beat.segment.start);
+
+      if (overlap > bestOverlap) {
+        bestOverlap = overlap;
+        best = beat;
+      }
+    }
+
+    return best;
   }
 
   /// Creates time windows using the caption layers of the existing timeline.
@@ -596,6 +659,55 @@ class ThreeDScenePipeline {
     );
   }
 
+  /// The world path of one scene window of [apply]: finds the story beat of
+  /// the window, builds its [WorldScene] and [MotionScene] and renders it with
+  /// [renderWorldScene]. Returns null when the world path is not available for
+  /// this window (no story world, no beat, switch off): the caller then keeps
+  /// the old library path. A non-null result is final: either the world was
+  /// rendered or the scene goes back to 2.5D.
+  static Future<World3DSceneResult?> _renderWorldCue({
+    required int viewId,
+    required StoryWorldPlan? plan,
+    required _ThreeDCue cue,
+    required int sceneNumber,
+    required ThreeDExportSummary summary,
+    void Function(String message)? onStatus,
+    void Function(ThreeDStage stage)? onStage,
+  }) async {
+    if (!worldRenderingEnabled || plan == null) return null;
+
+    try {
+      final beat = _beatFor(plan.story.beats, cue.start, cue.end);
+      if (beat == null) return null;
+
+      final worldScene = plan.worldSceneOf(beat.index);
+      if (worldScene == null) return null;
+
+      final motion = StoryWorldBridge.sceneFor(
+        worldScene,
+        start: cue.start,
+        end: cue.end,
+      );
+
+      final move =
+          CameraHintBridge.hintFor(plan.story.beats, cue.start, cue.end) ??
+              DepthCameraMove.none;
+
+      return await renderWorldScene(
+        viewId: viewId,
+        motion: motion,
+        world: worldScene,
+        sceneNumber: sceneNumber,
+        summary: summary,
+        move: move,
+        onStatus: onStatus,
+        onStage: onStage,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Phase 1 + 2: tracks the main person and composites the scenes around
   /// them. Returns null (and removes any partial file) when nothing could be
   /// anchored, so the caller uses the previous panel compositing.
@@ -705,7 +817,9 @@ class ThreeDScenePipeline {
     String? compositePath;
     Stopwatch? compositeWatch;
 
-    if (!settings.online3DAssetsEnabled) {
+    // The world is generated by the app, so it does not need the online
+    // libraries: the export stops here only when BOTH paths are off.
+    if (!settings.online3DAssetsEnabled && !worldRenderingEnabled) {
       return ThreeDScenePipelineResult(
         applied: false,
         scenesRendered: 0,
@@ -744,6 +858,10 @@ class ThreeDScenePipeline {
 
     // The story of the video: its camera hints pick the camera of each scene.
     final storyBeats = _storyBeats(timeline);
+
+    // The story world, planned once: the same character and one fixed layout
+    // per environment in every scene of the video.
+    final worldPlan = _worldPlan(timeline);
 
     // Reports live progress for the whole 3D phase (0..1).
     void report(
@@ -789,6 +907,75 @@ class ThreeDScenePipeline {
           '(${cue.start.toStringAsFixed(1)}s – '
           '${cue.end.toStringAsFixed(1)}s)...',
         );
+
+        // World path: the scene is built from the story world (WorldScene +
+        // MotionScene) and rendered through the render router. A non-null
+        // result is final for this scene: rendered, or back to 2.5D.
+        final worldResult = await _renderWorldCue(
+          viewId: viewId,
+          plan: worldPlan,
+          cue: cue,
+          sceneNumber: sceneNumber,
+          summary: summary,
+          onStatus: onStatus,
+          onStage: (stage) => report(
+            _sceneFraction(index, cues.length, stage),
+            'مشهد $sceneNumber من ${cues.length} — ${stage.label}',
+            stage: stage,
+            scene: sceneNumber,
+          ),
+        );
+
+        if (worldResult != null) {
+          notes.addAll(worldResult.notes);
+
+          final clip = worldResult.clipPath;
+
+          if (worldResult.rendered && clip != null) {
+            // The world finished everything it was asked to do: replace its
+            // crash note, so whatever happens next is never blamed on it.
+            final lastWorldScene = index == cues.length - 1;
+
+            ThreeDCrashGuard.markSync(
+              ThreeDBreadcrumb(
+                scene: lastWorldScene ? 0 : sceneNumber + 1,
+                stage: lastWorldScene
+                    ? ThreeDStage.rendererRelease
+                    : ThreeDStage.search,
+                at: DateTime.now(),
+              ),
+            );
+
+            temporaryDirectories.add(File(clip).parent.path);
+
+            sceneClips.add(
+              ThreeDSceneClip(
+                path: clip,
+                start: cue.start,
+                end: cue.end,
+              ),
+            );
+
+            notes.add(
+              'مشهد $sceneNumber: عالم 3D من القصة '
+              '(${worldResult.routing.world.length} طبقة 3D، '
+              '${worldResult.routing.flat.length} طبقة 2.5D).',
+            );
+          }
+
+          // A scene that fell back is drawn by the 2.5D engine alone: it has
+          // no 3D clip and the failure is already in the log and the notes.
+          continue;
+        }
+
+        // The old library path needs the online sources.
+        if (!settings.online3DAssetsEnabled) {
+          notes.add(
+            'مشهد $sceneNumber: لا يوجد عالم 3D لهذا المشهد، ومصادر المجسمات '
+            'معطلة من الإعدادات.',
+          );
+          continue;
+        }
 
         report(
           _sceneFraction(index, cues.length, ThreeDStage.search),
