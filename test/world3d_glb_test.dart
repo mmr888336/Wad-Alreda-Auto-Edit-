@@ -187,10 +187,29 @@ void main() {
       expect(used, hasLength(3));
     });
 
-    test('the node is placed at the object position', () {
+    test('the position is baked into the vertices, not into the node', () {
       final glb = World3DGlbBuilder.buildObjects(<World3DObject>[_redBox]);
-      final node = (_json(glb.bytes)['nodes'] as List).single;
-      expect(node['translation'], <double>[0.0, 1.0, -2.0]);
+      final json = _json(glb.bytes);
+      final node = (json['nodes'] as List).single as Map;
+      expect(node.containsKey('translation'), isFalse);
+      expect(node.containsKey('rotation'), isFalse);
+      expect(node.containsKey('scale'), isFalse);
+      final position = (json['accessors'] as List).first as Map;
+      expect(position['min'], <double>[-0.5, 0.0, -3.5]);
+      expect(position['max'], <double>[0.5, 2.0, -0.5]);
+    });
+
+    test('the bounds cover every object', () {
+      final glb = World3DGlbBuilder.buildObjects(<World3DObject>[_redBox]);
+      expect(glb.bounds.min.x, closeTo(-0.5, 1e-9));
+      expect(glb.bounds.min.y, closeTo(0.0, 1e-9));
+      expect(glb.bounds.min.z, closeTo(-3.5, 1e-9));
+      expect(glb.bounds.max.x, closeTo(0.5, 1e-9));
+      expect(glb.bounds.max.y, closeTo(2.0, 1e-9));
+      expect(glb.bounds.max.z, closeTo(-0.5, 1e-9));
+      expect(glb.bounds.maxExtent, closeTo(3.0, 1e-9));
+      expect(glb.animated, isFalse);
+      expect(glb.animationSeconds, 0);
     });
 
     test('materials of the same colour are shared and colours are linear', () {
