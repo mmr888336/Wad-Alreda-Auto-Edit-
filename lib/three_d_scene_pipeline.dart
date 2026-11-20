@@ -9,7 +9,7 @@ import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'camera_hint_bridge.dart';
 import 'cinematic_world.dart' show WorldScene;
 import 'cue_windows.dart';
-import 'depth_camera_model.dart' show DepthCameraMove;
+import 'depth_camera_model.dart' show DepthCameraMove, SceneCamera;
 import 'filament_scene_exporter.dart';
 import 'khronos_model_catalog.dart';
 import 'motion_scene_model.dart' show MotionScene;
@@ -27,6 +27,7 @@ import 'three_d_stage_log.dart';
 import 'timeline_engine.dart';
 import 'visual_tracking_engine.dart';
 import 'world3d_scene_runner.dart';
+import 'world_scene_camera.dart';
 
 class ThreeDScenePipelineResult {
   final bool applied;
@@ -75,8 +76,10 @@ class _ThreeDCue {
 ///   into the native Filament renderer.
 /// - Captures camera movement. The camera of each scene follows the story:
 ///   the captions are read as a story and the camera hint of the beat spoken
-///   during the scene picks the camera (see [CameraHintBridge]); a scene
-///   without a hint keeps the old fixed cycle.
+///   during the scene picks the camera (see [CameraHintBridge] and
+///   [WorldSceneCamera]); a scene without a hint keeps the old fixed cycle.
+///   The camera of a world scene is the same for the 3D world and for the
+///   2.5D layers (it is carried by the [MotionScene]).
 /// - Tracks the main person (Phase 1) and anchors each 3D scene to them
 ///   (Phase 2); scenes that cannot be anchored keep the old panel.
 /// - Composites rendered scenes into the exported video.
@@ -665,12 +668,23 @@ class ThreeDScenePipeline {
   /// this window (no story world, no beat, switch off): the caller then keeps
   /// the old library path. A non-null result is final: either the world was
   /// rendered or the scene goes back to 2.5D.
+  ///
+  /// The camera of the scene comes from the story (see [WorldSceneCamera]):
+  /// the SAME camera is carried by the [MotionScene] (the 2.5D layers and the
+  /// 2.5D fallback use it) and drives the 3D camera path. [previousCamera] is
+  /// the camera of the 3D scene shown right before this one (null when it is
+  /// not adjacent) and [hasNext] tells whether another one is shown right
+  /// after it, so an entry into the window and its arrival stay together.
+  /// [onCamera] receives the camera chosen for the scene (null for none).
   static Future<World3DSceneResult?> _renderWorldCue({
     required int viewId,
     required StoryWorldPlan? plan,
     required _ThreeDCue cue,
     required int sceneNumber,
     required ThreeDExportSummary summary,
+    SceneCamera? previousCamera,
+    bool hasNext = false,
+    void Function(SceneCamera? camera)? onCamera,
     void Function(String message)? onStatus,
     void Function(ThreeDStage stage)? onStage,
   }) async {
@@ -683,15 +697,22 @@ class ThreeDScenePipeline {
       final worldScene = plan.worldSceneOf(beat.index);
       if (worldScene == null) return null;
 
-      final motion = StoryWorldBridge.sceneFor(
+      final baseMotion = StoryWorldBridge.sceneFor(
         worldScene,
         start: cue.start,
         end: cue.end,
       );
 
-      final move =
-          CameraHintBridge.hintFor(plan.story.beats, cue.start, cue.end) ??
-              DepthCameraMove.none;
+      final camera = WorldSceneCamera.plan(
+        scene: baseMotion,
+        beats: plan.story.beats,
+        previous: previousCamera,
+        hasNext: hasNext,
+      );
+      onCamera?.call(camera);
+
+      final motion =
+          camera == null ? baseMotion : baseMotion.withCamera(camera);
 
       return await renderWorldScene(
         viewId: viewId,
@@ -699,7 +720,8 @@ class ThreeDScenePipeline {
         world: worldScene,
         sceneNumber: sceneNumber,
         summary: summary,
-        move: move,
+        move: camera?.move ?? DepthCameraMove.none,
+        intensity: camera?.intensity ?? 0.8,
         onStatus: onStatus,
         onStage: onStage,
       );
@@ -888,6 +910,10 @@ class ThreeDScenePipeline {
     final service = ThreeDAssetService(settings: settings);
 
     try {
+      // The camera the world path gave to the scene before the current one
+      // (null when that scene had none or was not a world scene).
+      SceneCamera? lastWorldCamera;
+
       for (var index = 0; index < cues.length; index++) {
         final cue = cues[index];
         final sceneNumber = index + 1;
@@ -908,6 +934,16 @@ class ThreeDScenePipeline {
           '${cue.end.toStringAsFixed(1)}s)...',
         );
 
+        // The camera story only links 3D scenes that are shown one right after
+        // the other (an entry into the window and its arrival).
+        final previousCamera = index > 0 &&
+                WorldSceneCamera.areAdjacent(cues[index - 1].end, cue.start)
+            ? lastWorldCamera
+            : null;
+        final hasNextScene = index < cues.length - 1 &&
+            WorldSceneCamera.areAdjacent(cue.end, cues[index + 1].start);
+        SceneCamera? cueCamera;
+
         // World path: the scene is built from the story world (WorldScene +
         // MotionScene) and rendered through the render router. A non-null
         // result is final for this scene: rendered, or back to 2.5D.
@@ -917,6 +953,9 @@ class ThreeDScenePipeline {
           cue: cue,
           sceneNumber: sceneNumber,
           summary: summary,
+          previousCamera: previousCamera,
+          hasNext: hasNextScene,
+          onCamera: (camera) => cueCamera = camera,
           onStatus: onStatus,
           onStage: (stage) => report(
             _sceneFraction(index, cues.length, stage),
@@ -925,6 +964,8 @@ class ThreeDScenePipeline {
             scene: sceneNumber,
           ),
         );
+
+        lastWorldCamera = worldResult == null ? null : cueCamera;
 
         if (worldResult != null) {
           notes.addAll(worldResult.notes);
