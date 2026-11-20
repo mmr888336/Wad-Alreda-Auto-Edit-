@@ -120,6 +120,59 @@ class RenderRouter {
     );
   }
 
+  /// The routing of a scene that the 2.5D engine draws alone, with the
+  /// [reason] why (for example the 3D stage that failed). Every layer goes to
+  /// the 2.5D engine, in scene order.
+  static SceneRouting fallbackOf(MotionScene scene, String reason) {
+    return SceneRouting(
+      sceneId: scene.id,
+      world: const <MotionLayer>[],
+      flat: List<MotionLayer>.of(scene.layers),
+      fallback: true,
+      reason: reason,
+    );
+  }
+
+  /// Hands the world layers selected by [cannotDraw] back to the 2.5D engine
+  /// (a prop the 3D world has no picture for would otherwise vanish from the
+  /// final scene). The layers keep the order of [scene]. When no world layer
+  /// is left the whole scene is a 2.5D fallback with [reason].
+  static SceneRouting handBack(
+    MotionScene scene,
+    SceneRouting routing,
+    bool Function(MotionLayer layer) cannotDraw, {
+    String reason = 'no-world-layers',
+  }) {
+    if (routing.fallback) return routing;
+
+    final world = <MotionLayer>[];
+    final flat = <MotionLayer>[];
+    for (final layer in scene.layers) {
+      if (routing.world.contains(layer) && !cannotDraw(layer)) {
+        world.add(layer);
+      } else {
+        flat.add(layer);
+      }
+    }
+
+    if (world.isEmpty) {
+      return SceneRouting(
+        sceneId: routing.sceneId,
+        world: const <MotionLayer>[],
+        flat: flat,
+        fallback: true,
+        reason: reason,
+      );
+    }
+
+    return SceneRouting(
+      sceneId: routing.sceneId,
+      world: world,
+      flat: flat,
+      fallback: false,
+    );
+  }
+
   /// The part of [scene] the 2.5D engine draws: same id, timing, transition
   /// and depth camera, only the flat layers.
   static MotionScene flatSceneOf(MotionScene scene, SceneRouting routing) {
