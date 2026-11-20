@@ -11,7 +11,14 @@
 ///    picture (PNG bytes, keyed by the asset key of the layer); without a
 ///    picture it is skipped and listed in [World3DGlb.skipped];
 ///  * windows, the sun and light panels glow (emissive);
-///  * materials with the same colour are shared.
+///  * materials with the same colour are shared;
+///  * object positions are baked into the vertices, so the bounds the native
+///    loader computes (and rescales to a unit cube) never depend on node
+///    transforms;
+///  * with a camera path ([World3DCameraPath]) and a duration, the whole world
+///    hangs under one "world_rig" node that carries a translation + rotation
+///    animation: the inverse of the camera move (see world3d_rig.dart). The
+///    fixed native camera then sees a real 3D camera move.
 ///
 /// The file is plain glTF 2.0 (no extensions), so [GlbInspector] and the
 /// native engine accept it. A scene with nothing drawable throws a
@@ -27,6 +34,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import 'world3d_model.dart';
 import 'world3d_planner.dart' show World3DScene;
+import 'world3d_rig.dart';
 
 /// A finished GLB and what went into it.
 class World3DGlb {
@@ -41,6 +49,15 @@ class World3DGlb {
   /// Objects left out, each as `id: reason`.
   final List<String> skipped;
 
+  /// Bounds of everything in the file, in world units.
+  final World3DBounds bounds;
+
+  /// True when the file carries the camera rig animation.
+  final bool animated;
+
+  /// Length of the rig animation including its holds (0 when not animated).
+  final double animationSeconds;
+
   const World3DGlb({
     required this.bytes,
     required this.objectCount,
@@ -48,6 +65,9 @@ class World3DGlb {
     required this.triangleCount,
     required this.textureCount,
     required this.skipped,
+    required this.bounds,
+    this.animated = false,
+    this.animationSeconds = 0,
   });
 }
 
@@ -159,24 +179,42 @@ class World3DGlbBuilder {
   static const String _skin = '#F1C7A1';
 
   /// The GLB of [scene]. [billboardImages] maps the asset key of a prop layer
-  /// (`decor:coins`) to the PNG bytes of its picture.
+  /// (`decor:coins`) to the PNG bytes of its picture. With [cameraSeconds] the
+  /// file also carries the camera move of the scene as a rig animation.
   static World3DGlb build(
     World3DScene scene, {
     Map<String, Uint8List> billboardImages = const <String, Uint8List>{},
     int segments = 20,
+    double? cameraSeconds,
+    double holdStart = 0.5,
+    double holdEnd = 0.5,
+    int cameraFps = 30,
   }) {
     return buildObjects(
       scene.objects,
       billboardImages: billboardImages,
       segments: segments,
+      camera: cameraSeconds == null ? null : scene.camera,
+      cameraSeconds: cameraSeconds,
+      holdStart: holdStart,
+      holdEnd: holdEnd,
+      cameraFps: cameraFps,
     );
   }
 
   /// The GLB of [objects]. Throws [StateError] when none can be drawn.
+  ///
+  /// The rig animation is written only when [camera] is active and
+  /// [cameraSeconds] is given.
   static World3DGlb buildObjects(
     List<World3DObject> objects, {
     Map<String, Uint8List> billboardImages = const <String, Uint8List>{},
     int segments = 20,
+    World3DCameraPath? camera,
+    double? cameraSeconds,
+    double holdStart = 0.5,
+    double holdEnd = 0.5,
+    int cameraFps = 30,
   }) {
     final seg = segments < 6 ? 6 : (segments > 48 ? 48 : segments);
     final bin = _Bin();
@@ -190,6 +228,13 @@ class World3DGlbBuilder {
     final skipped = <String>[];
     var vertexTotal = 0;
     var triangleTotal = 0;
+
+    final boundsLo = <double>[double.infinity, double.infinity, double.infinity];
+    final boundsHi = <double>[
+      double.negativeInfinity,
+      double.negativeInfinity,
+      double.negativeInfinity,
+    ];
 
     int addAccessor(Map<String, Object> accessor) {
       accessors.add(accessor);
@@ -260,6 +305,9 @@ class World3DGlbBuilder {
         final count = mesh.vertexCount;
         if (count == 0 || count > 65535 || mesh.indices.isEmpty) continue;
 
+        // The position is baked into the vertices.
+        mesh.shift(object.position.x, object.position.y, object.position.z);
+
         final lo = <double>[double.infinity, double.infinity, double.infinity];
         final hi = <double>[
           double.negativeInfinity,
@@ -272,6 +320,10 @@ class World3DGlbBuilder {
             if (value < lo[axis]) lo[axis] = value;
             if (value > hi[axis]) hi[axis] = value;
           }
+        }
+        for (var axis = 0; axis < 3; axis++) {
+          if (lo[axis] < boundsLo[axis]) boundsLo[axis] = lo[axis];
+          if (hi[axis] > boundsHi[axis]) boundsHi[axis] = hi[axis];
         }
 
         final positionView =
@@ -332,16 +384,105 @@ class World3DGlbBuilder {
       nodes.add(<String, Object>{
         'name': object.id,
         'mesh': meshes.length - 1,
-        'translation': <double>[
-          object.position.x,
-          object.position.y,
-          object.position.z,
-        ],
       });
     }
 
     if (nodes.isEmpty) {
       throw StateError('World3D scene has no drawable object.');
+    }
+
+    final objectNodes = nodes.length;
+    final bounds = World3DBounds(
+      Vec3(boundsLo[0], boundsLo[1], boundsLo[2]),
+      Vec3(boundsHi[0], boundsHi[1], boundsHi[2]),
+    );
+
+    // Camera rig: one parent node moved by the inverse of the camera move.
+    List<Object>? animations;
+    var sceneNodes = <int>[for (var i = 0; i < objectNodes; i++) i];
+    var animationSeconds = 0.0;
+    final path = camera;
+    final seconds = cameraSeconds;
+    if (path != null && seconds != null && path.isActive) {
+      final animation = World3DRig.build(
+        path: path,
+        bounds: bounds,
+        duration: seconds,
+        holdStart: holdStart,
+        holdEnd: holdEnd,
+        fps: cameraFps,
+      );
+      if (animation.length >= 2) {
+        nodes.add(<String, Object>{
+          'name': 'world_rig',
+          'children': <int>[for (var i = 0; i < objectNodes; i++) i],
+        });
+        final rigIndex = nodes.length - 1;
+        sceneNodes = <int>[rigIndex];
+        animationSeconds = animation.duration;
+
+        final times = animation.times;
+        final timeAccessor = addAccessor(<String, Object>{
+          'bufferView': bin.addView(_floats(times)),
+          'componentType': 5126,
+          'count': times.length,
+          'type': 'SCALAR',
+          'min': <double>[times.first],
+          'max': <double>[times.last],
+        });
+        final translationValues = <double>[
+          for (final t in animation.translations) ...<double>[t.x, t.y, t.z],
+        ];
+        final translationAccessor = addAccessor(<String, Object>{
+          'bufferView': bin.addView(_floats(translationValues)),
+          'componentType': 5126,
+          'count': times.length,
+          'type': 'VEC3',
+        });
+        final rotationValues = <double>[
+          for (final q in animation.rotations) ...q,
+        ];
+        final rotationAccessor = addAccessor(<String, Object>{
+          'bufferView': bin.addView(_floats(rotationValues)),
+          'componentType': 5126,
+          'count': times.length,
+          'type': 'VEC4',
+        });
+
+        animations = <Object>[
+          <String, Object>{
+            'name': 'camera_rig',
+            'samplers': <Object>[
+              <String, Object>{
+                'input': timeAccessor,
+                'output': translationAccessor,
+                'interpolation': 'LINEAR',
+              },
+              <String, Object>{
+                'input': timeAccessor,
+                'output': rotationAccessor,
+                'interpolation': 'LINEAR',
+              },
+            ],
+            'channels': <Object>[
+              <String, Object>{
+                'sampler': 0,
+                'target': <String, Object>{
+                  'node': rigIndex,
+                  'path': 'translation',
+                },
+              },
+              <String, Object>{
+                'sampler': 1,
+                'target': <String, Object>{
+                  'node': rigIndex,
+                  'path': 'rotation',
+                },
+              },
+            ],
+          },
+        ];
+      }
     }
 
     final binary = bin.finish();
@@ -352,9 +493,7 @@ class World3DGlbBuilder {
       },
       'scene': 0,
       'scenes': <Object>[
-        <String, Object>{
-          'nodes': <int>[for (var i = 0; i < nodes.length; i++) i],
-        },
+        <String, Object>{'nodes': sceneNodes},
       ],
       'nodes': nodes,
       'meshes': meshes,
@@ -365,6 +504,9 @@ class World3DGlbBuilder {
         <String, Object>{'byteLength': binary.length},
       ],
     };
+    if (animations != null) {
+      root['animations'] = animations;
+    }
     if (images.isNotEmpty) {
       root['images'] = images;
       root['textures'] = <Object>[
@@ -383,11 +525,14 @@ class World3DGlbBuilder {
 
     return World3DGlb(
       bytes: _glb(utf8.encode(jsonEncode(root)), binary),
-      objectCount: nodes.length,
+      objectCount: objectNodes,
       vertexCount: vertexTotal,
       triangleCount: triangleTotal,
       textureCount: images.length,
       skipped: skipped,
+      bounds: bounds,
+      animated: animations != null,
+      animationSeconds: animationSeconds,
     );
   }
 
@@ -509,8 +654,8 @@ class World3DGlbBuilder {
       _Part(boxAt(0.3 * w, 0.38 * h, 0.5 * d, -0.2 * w, y(0.19)), legs),
       _Part(boxAt(0.3 * w, 0.38 * h, 0.5 * d, 0.2 * w, y(0.19)), legs),
       _Part(boxAt(0.8 * w, 0.4 * h, 0.7 * d, 0, y(0.58)), body),
-      _Part(boxAt(0.2 * w, 0.34 * h, 0.3 * d, -0.5 * w, y(0.6)), body),
-      _Part(boxAt(0.2 * w, 0.34 * h, 0.3 * d, 0.5 * w, y(0.6)), body),
+      _Part(boxAt(0.2 * w, 0.34 * h, 0.3 * d, -0.45 * w, y(0.6)), body),
+      _Part(boxAt(0.2 * w, 0.34 * h, 0.3 * d, 0.45 * w, y(0.6)), body),
       _Part(head, _skin),
     ];
   }
