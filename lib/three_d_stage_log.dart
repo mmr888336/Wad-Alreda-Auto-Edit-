@@ -3,11 +3,20 @@
 /// Each stage has an Arabic label so a failure can be reported in the stage
 /// that really failed (and never blamed on the wrong step).
 enum ThreeDStage {
+  /// World scene: the story world is planned as a 3D scene (pure Dart).
+  worldPlan('تخطيط مشهد العالم'),
+
+  /// World scene: the 3D scene is written as a GLB file (pure Dart).
+  worldGlb('بناء GLB للعالم'),
   search('البحث'),
   download('التنزيل'),
   inspect('فحص GLB'),
   filamentLoad('تحميل Filament'),
   camera('حركة الكاميرا'),
+
+  /// World scene: the native camera is set to manual, so the camera rig
+  /// inside the GLB moves the world.
+  manualCamera('كاميرا manual'),
   ready('جاهزية العرض'),
   capture('الالتقاط'),
 
