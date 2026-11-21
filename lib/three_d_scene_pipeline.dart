@@ -15,8 +15,10 @@ import 'khronos_model_catalog.dart';
 import 'motion_scene_model.dart' show MotionScene;
 import 'person_anchored_compositor.dart';
 import 'person_tracking_service.dart';
+import 'render_router.dart' show SceneRouting;
 import 'scene_frame_guard.dart';
 import 'settings.dart';
+import 'silence_cutter.dart' show SilenceCutter;
 import 'story_understanding.dart' show StoryBeat, StorySegment;
 import 'story_world_bridge.dart' show StoryWorldBridge, StoryWorldPlan;
 import 'three_d_asset_service.dart';
@@ -27,7 +29,9 @@ import 'three_d_stage_log.dart';
 import 'timeline_engine.dart';
 import 'visual_tracking_engine.dart';
 import 'world3d_scene_runner.dart';
+import 'world_flat_renderer.dart';
 import 'world_scene_camera.dart';
+import 'world_scene_compositor.dart';
 
 class ThreeDScenePipelineResult {
   final bool applied;
@@ -61,6 +65,39 @@ class _ThreeDCue {
   double get duration => end - start;
 }
 
+/// What the world path gives back for one scene window.
+class _WorldCueOutcome {
+  final World3DSceneResult result;
+  final WorldScene world;
+  final MotionScene motion;
+
+  const _WorldCueOutcome({
+    required this.result,
+    required this.world,
+    required this.motion,
+  });
+}
+
+/// A world scene waiting for the full-background composition.
+/// [worldClipPath] is null when the scene fell back to 2.5D.
+class _WorldEntry {
+  final int sceneNumber;
+  final _ThreeDCue cue;
+  final WorldScene world;
+  final MotionScene motion;
+  final SceneRouting routing;
+  final String? worldClipPath;
+
+  const _WorldEntry({
+    required this.sceneNumber,
+    required this.cue,
+    required this.world,
+    required this.motion,
+    required this.routing,
+    required this.worldClipPath,
+  });
+}
+
 /// Automatic 3D scene pipeline:
 /// - Reads real caption timestamps.
 /// - Creates scene windows.
@@ -80,19 +117,25 @@ class _ThreeDCue {
 ///   [WorldSceneCamera]); a scene without a hint keeps the old fixed cycle.
 ///   The camera of a world scene is the same for the 3D world and for the
 ///   2.5D layers (it is carried by the [MotionScene]).
-/// - Tracks the main person (Phase 1) and anchors each 3D scene to them
-///   (Phase 2); scenes that cannot be anchored keep the old panel.
-/// - Composites rendered scenes into the exported video.
+/// - Composes the world scenes as the FULL BACKGROUND of their windows (see
+///   [WorldSceneCompositor]): the captured world is the picture, the flat
+///   2.5D layers are drawn on top of it, and a scene that fell back to 2.5D
+///   is drawn whole by the 2.5D engine ([WorldFlatRenderer]). If that
+///   composition fails, the world clips go back to the previous "screen"
+///   composition. Switch: [worldBackgroundEnabled].
+/// - Tracks the main person (Phase 1) and anchors each library 3D scene to
+///   them (Phase 2); scenes that cannot be anchored keep the old panel.
+/// - Composites rendered library scenes into the exported video.
 ///
 /// Every stage of every scene is logged (see [ThreeDExportSummary]): search,
 /// download, GLB inspection, Filament load, camera, readiness, capture,
 /// renderer release and compositing (and, for a world scene, plan, GLB and
-/// manual camera). Both the START and the END of each stage
-/// are written, so a crash shows exactly which stage was running. A failed
-/// attempt is reported with the stage it failed in, so a problem is never
-/// blamed on the wrong step. The log of the latest export is kept in
-/// [lastExportSummary] and, line by line, on disk (see [ThreeDCrashGuard]) so
-/// it survives a crash.
+/// manual camera, then the 2.5D layers and the world composition). Both the
+/// START and the END of each stage are written, so a crash shows exactly which
+/// stage was running. A failed attempt is reported with the stage it failed
+/// in, so a problem is never blamed on the wrong step. The log of the latest
+/// export is kept in [lastExportSummary] and, line by line, on disk (see
+/// [ThreeDCrashGuard]) so it survives a crash.
 ///
 /// The crash note is replaced as soon as a model finishes capturing, so a
 /// later crash (releasing the renderer, the next search, compositing) is never
@@ -102,8 +145,8 @@ class _ThreeDCue {
 ///
 /// The native Filament view is only needed while scenes are rendered. As soon
 /// as the last scene is captured the pipeline calls `onRenderingDone`, so the
-/// screen can release the view (GPU memory and heat) before person tracking
-/// and compositing start.
+/// screen can release the view (GPU memory and heat) before the 2.5D layers,
+/// person tracking and compositing start.
 class ThreeDScenePipeline {
   ThreeDScenePipeline._();
 
@@ -120,10 +163,14 @@ class ThreeDScenePipeline {
   static const int _captureSize = 624;
   static const int _captureFrameRate = 18;
 
-  // Share of the 3D phase bar: scenes, then person tracking, then compositing.
-  static const double _sceneShare = 0.60;
-  static const double _trackingStart = 0.60;
-  static const double _compositeStart = 0.72;
+  // Share of the 3D phase bar: scenes, then the 2.5D layers of the world
+  // scenes, then the world composition, then person tracking, then the
+  // compositing of library scenes.
+  static const double _sceneShare = 0.50;
+  static const double _flatStart = 0.50;
+  static const double _worldCompositeStart = 0.58;
+  static const double _trackingStart = 0.66;
+  static const double _compositeStart = 0.78;
 
   /// Phase 2 switch: follow the tracked person with the 3D scenes.
   /// Any failure falls back to the previous panel compositing.
@@ -138,6 +185,11 @@ class ThreeDScenePipeline {
   /// that fails) instead of searching and downloading a library model. When
   /// false the whole export behaves exactly as before.
   static bool worldRenderingEnabled = true;
+
+  /// When true the world clips are composed as the FULL BACKGROUND of their
+  /// windows with the 2.5D layers on top. When false the world clips are
+  /// blended over the picture in "screen" mode, as before.
+  static bool worldBackgroundEnabled = true;
 
   /// Stage log of the most recent [apply] call (also when it ended early).
   static ThreeDExportSummary? lastExportSummary;
@@ -179,6 +231,9 @@ class ThreeDScenePipeline {
         ThreeDStage.ready => 0.52,
         ThreeDStage.capture => 0.60,
         ThreeDStage.rendererRelease => 1.00,
+        ThreeDStage.worldFlat => 1.00,
+        ThreeDStage.worldFallback => 1.00,
+        ThreeDStage.worldComposite => 1.00,
         ThreeDStage.composite => 1.00,
       };
 
@@ -676,7 +731,7 @@ class ThreeDScenePipeline {
   /// not adjacent) and [hasNext] tells whether another one is shown right
   /// after it, so an entry into the window and its arrival stay together.
   /// [onCamera] receives the camera chosen for the scene (null for none).
-  static Future<World3DSceneResult?> _renderWorldCue({
+  static Future<_WorldCueOutcome?> _renderWorldCue({
     required int viewId,
     required StoryWorldPlan? plan,
     required _ThreeDCue cue,
@@ -714,7 +769,7 @@ class ThreeDScenePipeline {
       final motion =
           camera == null ? baseMotion : baseMotion.withCamera(camera);
 
-      return await renderWorldScene(
+      final result = await renderWorldScene(
         viewId: viewId,
         motion: motion,
         world: worldScene,
@@ -725,16 +780,205 @@ class ThreeDScenePipeline {
         onStatus: onStatus,
         onStage: onStage,
       );
+
+      return _WorldCueOutcome(
+        result: result,
+        world: worldScene,
+        motion: motion,
+      );
     } catch (_) {
       return null;
     }
   }
 
+  /// Draws the 2.5D part of every world scene and returns the clips for the
+  /// full-background composition:
+  /// - a scene rendered in 3D: its world clip, plus (when there are flat
+  ///   layers) a 2.5D clip of those layers to go on top;
+  /// - a scene that fell back: a 2.5D clip of the whole scene.
+  /// A failure here never stops the export: the world clip is used without
+  /// the flat layers, and a fallback scene stays as it is in the video.
+  static Future<List<WorldBackgroundClip>> _prepareWorldClips({
+    required List<_WorldEntry> entries,
+    required String videoPath,
+    required AppSettings settings,
+    required ThreeDExportSummary summary,
+    required List<String> notes,
+    required Set<String> temporaryDirectories,
+    void Function(double fraction, String message, ThreeDStage stage)?
+        onPhase,
+  }) async {
+    final clips = <WorldBackgroundClip>[];
+
+    // Canvas of the 2.5D clips: the video's aspect, short side at most 720.
+    var width = 0;
+    var height = 0;
+
+    if (WorldFlatRenderer.enabled) {
+      try {
+        final info = await SilenceCutter.probe(videoPath);
+        final shortSide = math.min(info.w, info.h);
+        final factor = shortSide > WorldFlatRenderer.maxShortSide
+            ? WorldFlatRenderer.maxShortSide / shortSide
+            : 1.0;
+        width = WorldFlatRenderer.evenSize(info.w * factor);
+        height = WorldFlatRenderer.evenSize(info.h * factor);
+      } catch (_) {
+        width = 0;
+        height = 0;
+      }
+    }
+
+    Directory? work;
+
+    if (width > 0 && height > 0) {
+      try {
+        final created = await Directory.systemTemp.createTemp('world_flat_');
+        temporaryDirectories.add(created.path);
+        work = created;
+      } catch (_) {
+        work = null;
+      }
+    }
+
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final font =
+        settings.captionFont == 'auto' ? 'Cairo' : settings.captionFont;
+    final temps = <String>[];
+
+    for (var index = 0; index < entries.length; index++) {
+      final entry = entries[index];
+      final worldClip = entry.worldClipPath;
+      final stage = worldClip == null
+          ? ThreeDStage.worldFallback
+          : ThreeDStage.worldFlat;
+      final label = 'مشهد ${entry.sceneNumber}';
+
+      onPhase?.call(
+        _flatStart +
+            (_worldCompositeStart - _flatStart) * (index / entries.length),
+        '$label — ${stage.label}...',
+        stage,
+      );
+
+      ThreeDCrashGuard.markSync(
+        ThreeDBreadcrumb(
+          scene: entry.sceneNumber,
+          stage: stage,
+          at: DateTime.now(),
+          assetTitle: 'مشهد عالم 3D',
+        ),
+      );
+      summary.begin(entry.sceneNumber, stage);
+      final watch = Stopwatch()..start();
+
+      var outcome = const WorldFlatOutcome();
+      final directory = work;
+
+      if (directory != null) {
+        outcome = await WorldFlatRenderer.renderScene(
+          world: entry.world,
+          motion: entry.motion,
+          routing: entry.routing,
+          wholeScene: worldClip == null,
+          width: width,
+          height: height,
+          idPrefix: 'w${entry.sceneNumber}',
+          dir: directory.path,
+          stamp: stamp,
+          index: index,
+          fontFamily: font,
+          temps: temps,
+        );
+      }
+
+      if (worldClip != null) {
+        // The world is drawn by Filament; the flat layers go on top of it.
+        final overlay = outcome.path;
+
+        if (outcome.error != null) {
+          summary.record(
+            entry.sceneNumber,
+            stage,
+            ok: false,
+            elapsed: watch.elapsed,
+            detail: outcome.error,
+          );
+          notes.add(
+            '$label: تعذر رسم طبقات 2.5D فوق العالم (${outcome.error})؛ '
+            'عُرض العالم بدونها.',
+          );
+        } else {
+          summary.record(
+            entry.sceneNumber,
+            stage,
+            ok: true,
+            elapsed: watch.elapsed,
+            detail: overlay == null
+                ? (directory == null
+                    ? 'تخطي (محرك 2.5D غير متاح)'
+                    : 'لا توجد طبقات 2.5D فوق العالم')
+                : '${outcome.layerCount} طبقة 2.5D فوق العالم',
+          );
+        }
+
+        clips.add(
+          WorldBackgroundClip(
+            path: worldClip,
+            start: entry.cue.start,
+            end: entry.cue.end,
+            overlayPath: overlay,
+          ),
+        );
+      } else {
+        // The scene fell back from 3D: the 2.5D engine draws all of it.
+        final path = outcome.path;
+
+        if (path == null) {
+          summary.record(
+            entry.sceneNumber,
+            stage,
+            ok: false,
+            elapsed: watch.elapsed,
+            detail: outcome.error ??
+                (directory == null
+                    ? 'محرك 2.5D غير متاح'
+                    : 'لا توجد طبقات للرسم'),
+          );
+          notes.add(
+            '$label: تعذر رسم المشهد بمحرك 2.5D؛ بقي كما هو في الفيديو.',
+          );
+        } else {
+          summary.record(
+            entry.sceneNumber,
+            stage,
+            ok: true,
+            elapsed: watch.elapsed,
+            detail: '${outcome.layerCount} طبقة',
+          );
+          notes.add('$label: رُسم بمحرك 2.5D بعد الرجوع من 3D.');
+          clips.add(
+            WorldBackgroundClip(
+              path: path,
+              start: entry.cue.start,
+              end: entry.cue.end,
+            ),
+          );
+        }
+      }
+    }
+
+    return clips;
+  }
+
   /// Phase 1 + 2: tracks the main person and composites the scenes around
   /// them. Returns null (and removes any partial file) when nothing could be
   /// anchored, so the caller uses the previous panel compositing.
+  /// [videoPath] is the base the scenes are drawn on; the person is tracked
+  /// in [trackingVideoPath] (the original video) when it is given.
   static Future<String?> _compositeAnchored({
     required String videoPath,
+    String? trackingVideoPath,
     required List<ThreeDSceneClip> scenes,
     required TimelineProject timeline,
     required AppSettings settings,
@@ -746,7 +990,7 @@ class ThreeDScenePipeline {
     onPhase?.call(_trackingStart, 'جاري تتبع الشخص لربط المجسمات به...');
 
     final run = await PersonTrackingService.analyzeVideo(
-      videoPath,
+      trackingVideoPath ?? videoPath,
       config: TrackingConfig(
         sampleFps: 6,
         frameWidth: 480,
@@ -809,11 +1053,12 @@ class ThreeDScenePipeline {
     void Function(ThreeDProgress progress)? onProgress,
 
     /// Called once every scene is rendered and the native Filament view is no
-    /// longer needed (before person tracking and compositing).
+    /// longer needed (before the 2.5D layers, person tracking and compositing).
     Future<void> Function()? onRenderingDone,
   }) async {
     final notes = <String>[];
     final sceneClips = <ThreeDSceneClip>[];
+    final worldEntries = <_WorldEntry>[];
     final temporaryDirectories = <String>{};
 
     // Starts a fresh on-disk log; every stage is appended as it happens, so
@@ -837,6 +1082,7 @@ class ThreeDScenePipeline {
     lastExportSummary = summary;
 
     String? compositePath;
+    String? worldCompositePath;
     Stopwatch? compositeWatch;
 
     // The world is generated by the app, so it does not need the online
@@ -947,7 +1193,7 @@ class ThreeDScenePipeline {
         // World path: the scene is built from the story world (WorldScene +
         // MotionScene) and rendered through the render router. A non-null
         // result is final for this scene: rendered, or back to 2.5D.
-        final worldResult = await _renderWorldCue(
+        final worldOutcome = await _renderWorldCue(
           viewId: viewId,
           plan: worldPlan,
           cue: cue,
@@ -965,9 +1211,10 @@ class ThreeDScenePipeline {
           ),
         );
 
-        lastWorldCamera = worldResult == null ? null : cueCamera;
+        lastWorldCamera = worldOutcome == null ? null : cueCamera;
 
-        if (worldResult != null) {
+        if (worldOutcome != null) {
+          final worldResult = worldOutcome.result;
           notes.addAll(worldResult.notes);
 
           final clip = worldResult.clipPath;
@@ -989,23 +1236,48 @@ class ThreeDScenePipeline {
 
             temporaryDirectories.add(File(clip).parent.path);
 
-            sceneClips.add(
-              ThreeDSceneClip(
-                path: clip,
-                start: cue.start,
-                end: cue.end,
-              ),
-            );
+            if (worldBackgroundEnabled) {
+              // Composed later as the full background of the window.
+              worldEntries.add(
+                _WorldEntry(
+                  sceneNumber: sceneNumber,
+                  cue: cue,
+                  world: worldOutcome.world,
+                  motion: worldOutcome.motion,
+                  routing: worldResult.routing,
+                  worldClipPath: clip,
+                ),
+              );
+            } else {
+              sceneClips.add(
+                ThreeDSceneClip(
+                  path: clip,
+                  start: cue.start,
+                  end: cue.end,
+                ),
+              );
+            }
 
             notes.add(
               'مشهد $sceneNumber: عالم 3D من القصة '
               '(${worldResult.routing.world.length} طبقة 3D، '
               '${worldResult.routing.flat.length} طبقة 2.5D).',
             );
+          } else if (worldBackgroundEnabled && worldResult.fellBack) {
+            // A scene that fell back is drawn whole by the 2.5D engine.
+            worldEntries.add(
+              _WorldEntry(
+                sceneNumber: sceneNumber,
+                cue: cue,
+                world: worldOutcome.world,
+                motion: worldOutcome.motion,
+                routing: worldResult.routing,
+                worldClipPath: null,
+              ),
+            );
           }
 
-          // A scene that fell back is drawn by the 2.5D engine alone: it has
-          // no 3D clip and the failure is already in the log and the notes.
+          // The failure of a fallback scene is already in the log and the notes.
           continue;
         }
 
@@ -1300,11 +1572,16 @@ class ThreeDScenePipeline {
         }
       }
 
+      final worldRendered =
+          worldEntries.where((entry) => entry.worldClipPath != null).length;
+      final worldFellBack = worldEntries.length - worldRendered;
+
       notes.add(
-        'ملخص 3D: تم تجهيز ${sceneClips.length} من ${cues.length} مشهد.',
+        'ملخص 3D: تم تجهيز ${sceneClips.length + worldRendered} من ${cues.length} مشهد'
+        '${worldFellBack > 0 ? '، و$worldFellBack مشهد يُرسم بـ 2.5D' : ''}.',
       );
 
-      if (sceneClips.isEmpty) {
+      if (sceneClips.isEmpty && worldEntries.isEmpty) {
         notes.add(
           'لم يتم إنشاء أي مشهد 3D؛ تم الاحتفاظ بالفيديو الأصلي دون تغييره.',
         );
@@ -1360,86 +1637,227 @@ class ThreeDScenePipeline {
         );
       }
 
-      onStatus?.call(
-        'جاري تركيب ${sceneClips.length} مشاهد 3D في الفيديو...',
-      );
+      // World scenes: the 2.5D layers go on top of the world, and a scene that
+      // fell back is drawn whole by the 2.5D engine. Then the world is composed
+      // as the FULL BACKGROUND of its window. If that fails, the world clips go
+      // back to the previous "screen" composition below.
+      var worldComposed = 0;
+      String? worldPath;
 
-      report(
-        _sceneShare,
-        'اكتمل تجهيز المشاهد؛ جاري التركيب مع الفيديو...',
-        stage: ThreeDStage.composite,
-      );
+      if (worldEntries.isNotEmpty) {
+        final worldClips = await _prepareWorldClips(
+          entries: worldEntries,
+          videoPath: videoPath,
+          settings: settings,
+          summary: summary,
+          notes: notes,
+          temporaryDirectories: temporaryDirectories,
+          onPhase: (fraction, message, stage) =>
+              report(fraction, message, stage: stage),
+        );
 
-      // From here on a crash belongs to tracking / compositing, not a model.
-      ThreeDCrashGuard.markSync(
-        ThreeDBreadcrumb(
-          scene: 0,
-          stage: ThreeDStage.composite,
-          at: DateTime.now(),
-        ),
-      );
-      summary.begin(0, ThreeDStage.composite);
-
-      final watch = Stopwatch()..start();
-      compositeWatch = watch;
-
-      String? anchoredPath;
-
-      if (personAnchoringEnabled && PersonTrackingService.hasDetector) {
-        if (await ThreeDCrashGuard.isAnchoringDisabled()) {
-          notes.add(
-            'ربط المجسمات بالشخص معطّل بعد انهيار سابق؛ استُخدم التركيب العادي '
-            '(يمكن إعادة تفعيله من تقرير 3D).',
+        if (worldClips.isNotEmpty) {
+          ThreeDCrashGuard.markSync(
+            ThreeDBreadcrumb(
+              scene: 0,
+              stage: ThreeDStage.worldComposite,
+              at: DateTime.now(),
+            ),
           );
-        } else {
+          summary.begin(
+            0,
+            ThreeDStage.worldComposite,
+            detail: '${worldClips.length} مشهد',
+          );
+
+          final worldWatch = Stopwatch()..start();
+
+          onStatus?.call(
+            'جاري تركيب ${worldClips.length} مشاهد عالم كخلفية كاملة...',
+          );
+          report(
+            _worldCompositeStart,
+            'جاري تركيب العالم كخلفية كاملة...',
+            stage: ThreeDStage.worldComposite,
+          );
+
           try {
-            anchoredPath = await _compositeAnchored(
+            final composed = await WorldSceneCompositor.composite(
               videoPath: videoPath,
-              scenes: sceneClips,
-              timeline: timeline,
-              settings: settings,
-              notes: notes,
+              clips: worldClips,
+              duration: timeline.duration,
+              maximumQuality: settings.maximumQuality,
               onStatus: onStatus,
-              onPhase: (fraction, message) => report(
-                fraction,
-                message,
-                stage: ThreeDStage.composite,
+              onProgress: (value) => report(
+                _worldCompositeStart +
+                    (_trackingStart - _worldCompositeStart) * _unit(value),
+                'جاري تركيب العالم كخلفية كاملة...',
+                stage: ThreeDStage.worldComposite,
               ),
             );
-          } catch (error) {
-            anchoredPath = null;
-            notes.add(
-              'تعذر ربط المجسمات بالشخص؛ تم استخدام التركيب العادي: $error',
+
+            worldPath = composed;
+            worldCompositePath = composed;
+            worldComposed = worldClips.length;
+
+            summary.record(
+              0,
+              ThreeDStage.worldComposite,
+              ok: true,
+              elapsed: worldWatch.elapsed,
+              detail: '$worldComposed مشهد كخلفية كاملة',
             );
+            notes.add(
+              'التركيب: $worldComposed مشهد عالم كخلفية كاملة '
+              '(طبقات 2.5D فوقها).',
+            );
+          } catch (error) {
+            worldPath = null;
+
+            summary.record(
+              0,
+              ThreeDStage.worldComposite,
+              ok: false,
+              elapsed: worldWatch.elapsed,
+              detail: '$error',
+            );
+            notes.add(
+              'تعذر تركيب العالم كخلفية كاملة؛ استُخدم التركيب القديم (screen): $error',
+            );
+
+            for (final entry in worldEntries) {
+              final path = entry.worldClipPath;
+              if (path == null) continue;
+
+              sceneClips.add(
+                ThreeDSceneClip(
+                  path: path,
+                  start: entry.cue.start,
+                  end: entry.cue.end,
+                ),
+              );
+            }
           }
         }
       }
 
-      if (anchoredPath == null) {
-        notes.add('التركيب: عادي (بدون ربط بحركة الشخص).');
+      final String resultPath;
+      Stopwatch? libraryWatch;
+      var libraryDetail = '';
+
+      if (sceneClips.isEmpty) {
+        final composedWorld = worldPath;
+
+        if (composedWorld == null) {
+          notes.add(
+            'لم يتم تركيب أي مشهد؛ تم الاحتفاظ بالفيديو الأصلي دون تغييره.',
+          );
+          notes.add(summary.headline);
+
+          return ThreeDScenePipelineResult(
+            applied: false,
+            scenesRendered: 0,
+            notes: notes,
+            summary: summary,
+          );
+        }
+
+        resultPath = composedWorld;
+      } else {
+        // Library scenes (and world clips when the full-background composition
+        // is off or failed): drawn on the composed video, the person is
+        // tracked in the original one.
+        final baseVideoPath = worldPath ?? videoPath;
+
+        onStatus?.call(
+          'جاري تركيب ${sceneClips.length} مشاهد 3D في الفيديو...',
+        );
+
+        report(
+          _trackingStart,
+          'اكتمل تجهيز المشاهد؛ جاري التركيب مع الفيديو...',
+          stage: ThreeDStage.composite,
+        );
+
+        // From here on a crash belongs to tracking / compositing, not a model.
+        ThreeDCrashGuard.markSync(
+          ThreeDBreadcrumb(
+            scene: 0,
+            stage: ThreeDStage.composite,
+            at: DateTime.now(),
+          ),
+        );
+        summary.begin(0, ThreeDStage.composite);
+
+        final watch = Stopwatch()..start();
+        compositeWatch = watch;
+        libraryWatch = watch;
+
+        String? anchoredPath;
+
+        if (personAnchoringEnabled && PersonTrackingService.hasDetector) {
+          if (await ThreeDCrashGuard.isAnchoringDisabled()) {
+            notes.add(
+              'ربط المجسمات بالشخص معطّل بعد انهيار سابق؛ استُخدم التركيب العادي '
+              '(يمكن إعادة تفعيله من تقرير 3D).',
+            );
+          } else {
+            try {
+              anchoredPath = await _compositeAnchored(
+                videoPath: baseVideoPath,
+                trackingVideoPath: videoPath,
+                scenes: sceneClips,
+                timeline: timeline,
+                settings: settings,
+                notes: notes,
+                onStatus: onStatus,
+                onPhase: (fraction, message) => report(
+                  fraction,
+                  message,
+                  stage: ThreeDStage.composite,
+                ),
+              );
+            } catch (error) {
+              anchoredPath = null;
+              notes.add(
+                'تعذر ربط المجسمات بالشخص؛ تم استخدام التركيب العادي: $error',
+              );
+            }
+          }
+        }
+
+        if (anchoredPath == null) {
+          notes.add('التركيب: عادي (بدون ربط بحركة الشخص).');
+        }
+
+        resultPath = anchoredPath ??
+            await FilamentSceneExporter.compositeScenesOverVideo(
+              videoPath: baseVideoPath,
+              scenes: sceneClips,
+              duration: timeline.duration,
+              maximumQuality: settings.maximumQuality,
+              onStatus: onStatus,
+              onProgress: (value) => report(
+                _compositeStart + (1.0 - _compositeStart) * _unit(value),
+                'جاري دمج مشاهد 3D مع الفيديو...',
+                stage: ThreeDStage.composite,
+              ),
+            );
+
+        libraryDetail = anchoredPath != null
+            ? '${sceneClips.length} مشهد؛ مربوط بحركة الشخص'
+            : '${sceneClips.length} مشهد؛ تركيب عادي';
       }
 
-      compositePath = anchoredPath ??
-          await FilamentSceneExporter.compositeScenesOverVideo(
-            videoPath: videoPath,
-            scenes: sceneClips,
-            duration: timeline.duration,
-            maximumQuality: settings.maximumQuality,
-            onStatus: onStatus,
-            onProgress: (value) => report(
-              _compositeStart + (1.0 - _compositeStart) * _unit(value),
-              'جاري دمج مشاهد 3D مع الفيديو...',
-              stage: ThreeDStage.composite,
-            ),
-          );
+      compositePath = resultPath;
 
-      final compositeFile = File(compositePath);
+      final compositeFile = File(resultPath);
 
       if (!await compositeFile.exists() ||
           await compositeFile.length() < 4096) {
         throw FileSystemException(
           'ملف الفيديو بعد دمج مشاهد 3D غير صالح.',
-          compositePath,
+          resultPath,
         );
       }
 
@@ -1466,15 +1884,17 @@ class ThreeDScenePipeline {
         rethrow;
       }
 
-      summary.record(
-        0,
-        ThreeDStage.composite,
-        ok: true,
-        elapsed: watch.elapsed,
-        detail: anchoredPath != null
-            ? '${sceneClips.length} مشهد؛ مربوط بحركة الشخص'
-            : '${sceneClips.length} مشهد؛ تركيب عادي',
-      );
+      final finishedLibraryWatch = libraryWatch;
+
+      if (finishedLibraryWatch != null) {
+        summary.record(
+          0,
+          ThreeDStage.composite,
+          ok: true,
+          elapsed: finishedLibraryWatch.elapsed,
+          detail: libraryDetail,
+        );
+      }
 
       notes.add(summary.headline);
 
@@ -1490,7 +1910,7 @@ class ThreeDScenePipeline {
 
       return ThreeDScenePipelineResult(
         applied: true,
-        scenesRendered: sceneClips.length,
+        scenesRendered: sceneClips.length + worldComposed,
         notes: notes,
         summary: summary,
       );
@@ -1536,9 +1956,12 @@ class ThreeDScenePipeline {
         } catch (_) {}
       }
 
-      if (compositePath != null) {
+      // Partial or intermediate files (a renamed result no longer exists).
+      for (final leftover in <String?>[compositePath, worldCompositePath]) {
+        if (leftover == null) continue;
+
         try {
-          final file = File(compositePath);
+          final file = File(leftover);
 
           if (await file.exists()) {
             await file.delete();
