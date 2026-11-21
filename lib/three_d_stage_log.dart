@@ -23,6 +23,17 @@ enum ThreeDStage {
   /// Releasing the native Filament view after the last scene is captured.
   /// It is its own stage, so a crash here is never blamed on the last model.
   rendererRelease('تحرير المحرك'),
+
+  /// World scene rendered in 3D: its flat 2.5D layers (props...) are drawn by
+  /// the 2.5D engine to go on top of the world.
+  worldFlat('طبقات 2.5D فوق العالم'),
+
+  /// World scene that fell back from 3D: the whole scene is drawn by the 2.5D
+  /// engine.
+  worldFallback('رسم المشهد بـ 2.5D'),
+
+  /// The world scenes are composed as the full background of the video.
+  worldComposite('تركيب العالم كخلفية كاملة'),
   composite('التركيب');
 
   const ThreeDStage(this.label);
