@@ -17,6 +17,8 @@ import android.view.MotionEvent
 import android.widget.FrameLayout
 import android.widget.TextView
 import com.google.android.filament.Engine
+import com.google.android.filament.EntityManager
+import com.google.android.filament.LightManager
 import com.google.android.filament.gltfio.Animator
 import com.google.android.filament.utils.Manipulator
 import com.google.android.filament.utils.ModelViewer
@@ -698,6 +700,11 @@ private class FilamentModelPlatformView(
                             manipulator = manipulator
                         )
 
+                        // ModelViewer only has one light (straight down) and no
+                        // ambient light, so everything facing the camera stays
+                        // black. Add a front key light and a side fill.
+                        addStudioLights(viewer)
+
                         viewer.loadModelGlb(buffer)
 
                         if (viewer.asset == null) {
@@ -790,6 +797,56 @@ private class FilamentModelPlatformView(
         } catch (error: Throwable) {
             failInitialization(error)
         }
+    }
+
+    /**
+     * Adds a front key light and a side fill light to the scene of [viewer].
+     *
+     * The light that ModelViewer creates points straight down and there is no
+     * indirect light, so only surfaces that face UP receive light: in a 3D world
+     * the walls, the sides of the furniture and the character's body (all facing
+     * the camera) came out pure black, with only the top of the head lit. The
+     * camera looks toward -z, so both lights travel toward -z. A failure here
+     * never stops the viewer from starting.
+     */
+    private fun addStudioLights(viewer: ModelViewer) {
+        try {
+            addDirectionalLight(
+                viewer,
+                90_000.0f,
+                1.0f, 0.97f, 0.92f,
+                -0.35f, -0.45f, -0.82f
+            )
+            addDirectionalLight(
+                viewer,
+                45_000.0f,
+                0.85f, 0.92f, 1.0f,
+                0.55f, -0.20f, -0.81f
+            )
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun addDirectionalLight(
+        viewer: ModelViewer,
+        intensity: Float,
+        red: Float,
+        green: Float,
+        blue: Float,
+        directionX: Float,
+        directionY: Float,
+        directionZ: Float
+    ) {
+        val entity = EntityManager.get().create()
+
+        LightManager.Builder(LightManager.Type.DIRECTIONAL)
+            .color(red, green, blue)
+            .intensity(intensity)
+            .direction(directionX, directionY, directionZ)
+            .castShadows(false)
+            .build(viewer.engine, entity)
+
+        viewer.scene.addEntity(entity)
     }
 
     private fun readBundledModel(context: Context): ByteBuffer {
