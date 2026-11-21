@@ -10,6 +10,8 @@ import 'three_d_crash_guard.dart';
 import 'three_d_render_surface.dart';
 import 'three_d_scene_pipeline.dart';
 import 'three_d_stage_log.dart';
+import 'three_d_stage_status.dart';
+import 'world_stage_panel.dart';
 
 /// 3D diagnostics: why each model failed in the last export, what crashed the
 /// app last time, and an offline Filament self-test that uses the model
@@ -70,6 +72,9 @@ class _ThreeDDiagnosticsPageState extends State<ThreeDDiagnosticsPage> {
     buffer.writeln(
       'ربط المجسمات بالشخص: ${_anchoringDisabled ? 'معطّل بعد انهيار' : 'مفعّل'}',
     );
+    buffer.writeln();
+    buffer.writeln('— مراحل مسار العالم 3D —');
+    buffer.writeln(ThreeDStageStatusReader.reportOf(_log));
     buffer.writeln();
     buffer.writeln('— سجل آخر تصدير 3D —');
     buffer.writeln(_log.trim().isEmpty ? 'لا يوجد سجل بعد.' : _log.trim());
@@ -328,6 +333,10 @@ class _ThreeDDiagnosticsPageState extends State<ThreeDDiagnosticsPage> {
                 onPressed: _clearCrash,
                 child: const Text('مسح هذا السجل'),
               ),
+          ]),
+          const SizedBox(height: 10),
+          _section('مراحل مسار العالم 3D (آخر تصدير)', [
+            WorldStagePanel(log: _log),
           ]),
           const SizedBox(height: 10),
           _section('سجل آخر تصدير 3D (سبب فشل كل مجسم)', [

@@ -1,7 +1,8 @@
 import 'three_d_stage_log.dart';
 
 /// Live progress of the 3D phase of an export:
-/// search -> download -> GLB inspection -> Filament -> capture -> person
+/// scenes (world plan -> GLB -> inspection -> Filament -> capture) -> 2.5D
+/// layers of the world -> full-background world composition -> person
 /// tracking -> compositing.
 class ThreeDProgress {
   const ThreeDProgress({
@@ -25,6 +26,14 @@ class ThreeDProgress {
   final int scene;
 
   final int sceneCount;
+
+  /// The line shown on the progress bar: the message, prefixed with the stage
+  /// when the message does not already name it.
+  String get line {
+    final current = stage;
+    if (current == null || message.contains(current.label)) return message;
+    return '${current.label}: $message';
+  }
 
   /// Maps the 3D phase onto a slice of the whole export bar.
   double overall({double from = 0.80, double to = 0.98}) {
