@@ -531,7 +531,9 @@ class _HomePageState extends State<HomePage> {
               _updateProgress(message: message);
             },
             onProgress: (ThreeDProgress live) {
-              _updateProgress(value: live.overall(), message: live.message);
+              // live.line names the stage that is running (for example
+              // "البحث: ...") instead of showing the bare message.
+              _updateProgress(value: live.overall(), message: live.line);
             },
             onRenderingDone: _releaseThreeDSurface,
           );
