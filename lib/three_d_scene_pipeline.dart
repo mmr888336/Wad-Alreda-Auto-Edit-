@@ -724,6 +724,11 @@ class ThreeDScenePipeline {
   /// the old library path. A non-null result is final: either the world was
   /// rendered or the scene goes back to 2.5D.
   ///
+  /// If building the scene throws, the scene also goes back to the old
+  /// library path (null), but the error is no longer silent: it is recorded
+  /// as a failed [ThreeDStage.worldPlan] stage of this scene, so it shows in
+  /// the export log, the crash log file and the 3D report.
+  ///
   /// The camera of the scene comes from the story (see [WorldSceneCamera]):
   /// the SAME camera is carried by the [MotionScene] (the 2.5D layers and the
   /// 2.5D fallback use it) and drives the 3D camera path. [previousCamera] is
@@ -744,6 +749,8 @@ class ThreeDScenePipeline {
     void Function(ThreeDStage stage)? onStage,
   }) async {
     if (!worldRenderingEnabled || plan == null) return null;
+
+    final watch = Stopwatch()..start();
 
     try {
       final beat = _beatFor(plan.story.beats, cue.start, cue.end);
@@ -786,7 +793,18 @@ class ThreeDScenePipeline {
         world: worldScene,
         motion: motion,
       );
-    } catch (_) {
+    } catch (error, stackTrace) {
+      // Building the world failed: the scene goes back to the old library
+      // path, but the reason is written down (log line, crash log file and
+      // the failure counts of the summary) instead of being swallowed.
+      summary.record(
+        sceneNumber,
+        ThreeDStage.worldPlan,
+        ok: false,
+        elapsed: watch.elapsed,
+        detail: 'تعذر بناء مشهد العالم؛ رجوع لمسار المكتبة القديم: $error',
+      );
+      debugPrint('[3D] world cue $sceneNumber failed: $error\n$stackTrace');
       return null;
     }
   }
