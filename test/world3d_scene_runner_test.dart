@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:auto_edit/cinematic_world.dart';
 import 'package:auto_edit/depth_camera_model.dart';
@@ -313,4 +315,64 @@ void main() {
       isTrue,
     );
   });
+
+  test(
+    'the camera move starts on the first captured frame: the GLB has no rest '
+    'at its start, only a short one after the move',
+    () async {
+      double? firstKey;
+      double? lastKey;
+      double? capturedSeconds;
+
+      final ops = World3DNativeOps(
+        loadModel: (path) async {
+          // The runner has written the GLB and deletes it only when the scene
+          // is over: read the rig animation back from its JSON chunk.
+          final bytes = File(path).readAsBytesSync();
+          final jsonLength =
+              ByteData.sublistView(bytes).getUint32(12, Endian.little);
+          final json = jsonDecode(
+            utf8.decode(bytes.sublist(20, 20 + jsonLength)),
+          ) as Map<String, dynamic>;
+
+          final animations = json['animations'] as List<dynamic>;
+          final animation = animations.first as Map<String, dynamic>;
+          final samplers = animation['samplers'] as List<dynamic>;
+          final sampler = samplers.first as Map<String, dynamic>;
+          final accessors = json['accessors'] as List<dynamic>;
+          final times =
+              accessors[sampler['input'] as int] as Map<String, dynamic>;
+
+          firstKey = ((times['min'] as List<dynamic>).first as num).toDouble();
+          lastKey = ((times['max'] as List<dynamic>).first as num).toDouble();
+        },
+        setManualCamera: () async {},
+        waitUntilRenderable: () async {},
+        capture: (seconds) async {
+          capturedSeconds = seconds;
+          return clipPath;
+        },
+      );
+
+      final result = await World3DSceneRunner.run(
+        motion: _motion,
+        world: _world(),
+        sceneNumber: 1,
+        ops: ops,
+        summary: ThreeDExportSummary(),
+        move: DepthCameraMove.pushIn,
+        settle: Duration.zero,
+      );
+
+      expect(result.rendered, isTrue);
+
+      // The capture asks for exactly the length of the move...
+      expect(capturedSeconds, closeTo(_motion.duration, 1e-9));
+
+      // ...and the animation is that move (from 0) plus 0.5 s of rest after
+      // it. With a rest at the start as well it would last 1.0 s longer.
+      expect(firstKey, 0.0);
+      expect(lastKey, closeTo(_motion.duration + 0.5, 1e-6));
+    },
+  );
 }
