@@ -343,6 +343,10 @@ class MotionCutawayRenderer {
   /// description next to it. Temporary images and the description file are
   /// added to [temps]; the MP4 itself is left to the caller. Returns null on
   /// failure.
+  ///
+  /// A clip shorter than [minSeconds] is not rendered (null). The default of
+  /// one second suits cutaways; the world scenes pass a smaller value because
+  /// their windows can be as short as half a second.
   static Future<MotionCutawayClip?> renderBuilt({
     required ReferenceSceneResult built,
     required String dir,
@@ -350,6 +354,7 @@ class MotionCutawayRenderer {
     required int index,
     required String fontFamily,
     required List<String> temps,
+    double minSeconds = 1.0,
   }) async {
     try {
       // Moving overlays; a problem here only means static overlays.
@@ -556,7 +561,7 @@ class MotionCutawayRenderer {
             depthCamera: withCamera,
             blendModes: withBlend,
           );
-          if (plan.totalDuration < 1.0) return null;
+          if (plan.totalDuration < minSeconds) return null;
           ok = await _runWithLook(plan, out, look);
           if (ok) {
             duration = plan.totalDuration;

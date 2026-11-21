@@ -14,9 +14,14 @@
 ///
 /// The depth camera of the scene is carried over, so the flat layers react to
 /// the same camera as the 3D world. Any failure returns no clip.
+///
+/// Short windows are rendered too: the pipeline cuts scene windows down to
+/// [minSeconds] (half a second) and the compositor accepts them, so the
+/// motion renderer must not refuse them (its default minimum is one second).
 library;
 
 import 'cinematic_world.dart' show WorldScene;
+import 'cue_windows.dart';
 import 'motion_cutaway_renderer.dart';
 import 'motion_scene_model.dart';
 import 'reference_scene_builder.dart'
@@ -44,6 +49,10 @@ class WorldFlatRenderer {
 
   /// Same limit as the motion cutaways.
   static const int maxShortSide = 720;
+
+  /// Shortest clip (seconds) that is rendered: the shortest scene window the
+  /// pipeline produces.
+  static const double minSeconds = CueWindows.minimumLength;
 
   /// Asset key of the particle layer of the look.
   static const String particleKey = 'bg:fx_world';
@@ -195,6 +204,7 @@ class WorldFlatRenderer {
         index: index,
         fontFamily: fontFamily,
         temps: temps,
+        minSeconds: minSeconds,
       );
 
       if (clip == null) {
