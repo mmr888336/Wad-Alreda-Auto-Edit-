@@ -30,6 +30,7 @@ import 'timeline_engine.dart';
 import 'visual_tracking_engine.dart';
 import 'world3d_scene_runner.dart';
 import 'world_flat_renderer.dart';
+import 'world_look_grade.dart';
 import 'world_scene_camera.dart';
 import 'world_scene_compositor.dart';
 
@@ -123,6 +124,9 @@ class _WorldEntry {
 ///   is drawn whole by the 2.5D engine ([WorldFlatRenderer]). If that
 ///   composition fails, the world clips go back to the previous "screen"
 ///   composition. Switch: [worldBackgroundEnabled].
+/// - Applies the light and atmosphere of the world ([WorldLookGrade]): the
+///   captured world clip is graded (tint, key light, vignette) and the 2.5D
+///   layers get the particles of the look. Switch: [WorldLookGrade.enabled].
 /// - Tracks the main person (Phase 1) and anchors each library 3D scene to
 ///   them (Phase 2); scenes that cannot be anchored keep the old panel.
 /// - Composites rendered library scenes into the exported video.
@@ -866,8 +870,11 @@ class ThreeDScenePipeline {
   /// Draws the 2.5D part of every world scene and returns the clips for the
   /// full-background composition:
   /// - a scene rendered in 3D: its world clip, plus (when there are flat
-  ///   layers) a 2.5D clip of those layers to go on top;
+  ///   layers or look particles) a 2.5D clip of those layers to go on top;
   /// - a scene that fell back: a 2.5D clip of the whole scene.
+  /// When [WorldLookGrade.enabled] is true the atmosphere particles of the
+  /// look are drawn in the 2.5D clip and the world clip carries the look, so
+  /// the compositor grades it.
   /// A failure here never stops the export: the world clip is used without
   /// the flat layers, and a fallback scene stays as it is in the video.
   static Future<List<WorldBackgroundClip>> _prepareWorldClips({
@@ -961,6 +968,7 @@ class ThreeDScenePipeline {
           index: index,
           fontFamily: font,
           temps: temps,
+          withLook: WorldLookGrade.enabled,
         );
       }
 
@@ -1000,6 +1008,7 @@ class ThreeDScenePipeline {
             start: entry.cue.start,
             end: entry.cue.end,
             overlayPath: overlay,
+            look: WorldLookGrade.enabled ? entry.world.look : null,
           ),
         );
       } else {
@@ -1771,20 +1780,61 @@ class ThreeDScenePipeline {
             stage: ThreeDStage.worldComposite,
           );
 
+          Future<String> compose(List<WorldBackgroundClip> clips) =>
+              WorldSceneCompositor.composite(
+                videoPath: videoPath,
+                clips: clips,
+                duration: timeline.duration,
+                maximumQuality: settings.maximumQuality,
+                onStatus: onStatus,
+                onProgress: (value) => report(
+                  _worldCompositeStart +
+                      (_trackingStart - _worldCompositeStart) * _unit(value),
+                  'جاري تركيب العالم كخلفية كاملة...',
+                  stage: ThreeDStage.worldComposite,
+                ),
+              );
+
+          // How many world clips carry the look (the colour grade).
+          var gradedScenes =
+              worldClips.where((clip) => clip.look != null).length;
+
           try {
-            final composed = await WorldSceneCompositor.composite(
-              videoPath: videoPath,
-              clips: worldClips,
-              duration: timeline.duration,
-              maximumQuality: settings.maximumQuality,
-              onStatus: onStatus,
-              onProgress: (value) => report(
-                _worldCompositeStart +
-                    (_trackingStart - _worldCompositeStart) * _unit(value),
-                'جاري تركيب العالم كخلفية كاملة...',
-                stage: ThreeDStage.worldComposite,
-              ),
-            );
+            String composed;
+
+            try {
+              composed = await compose(worldClips);
+            } catch (error) {
+              if (gradedScenes == 0) rethrow;
+
+              // The grade is the newest part of this composition: before the
+              // whole world is dropped to the old "screen" blend, the same
+              // composition is tried once more without the grade.
+              summary.record(
+                0,
+                ThreeDStage.worldComposite,
+                ok: false,
+                elapsed: worldWatch.elapsed,
+                detail: 'فشل التركيب مع تدرج الـLook: $error',
+              );
+              notes.add(
+                'تعذر التركيب مع تدرج الـLook ($error)؛ '
+                'أُعيد التركيب بدون التدرج.',
+              );
+              gradedScenes = 0;
+
+              composed = await compose(
+                <WorldBackgroundClip>[
+                  for (final clip in worldClips)
+                    WorldBackgroundClip(
+                      path: clip.path,
+                      start: clip.start,
+                      end: clip.end,
+                      overlayPath: clip.overlayPath,
+                    ),
+                ],
+              );
+            }
 
             worldPath = composed;
             worldCompositePath = composed;
@@ -1795,11 +1845,13 @@ class ThreeDScenePipeline {
               ThreeDStage.worldComposite,
               ok: true,
               elapsed: worldWatch.elapsed,
-              detail: '$worldComposed مشهد كخلفية كاملة',
+              detail: '$worldComposed مشهد كخلفية كاملة'
+                  '${gradedScenes > 0 ? ' — تدرج Look على $gradedScenes' : ''}',
             );
             notes.add(
               'التركيب: $worldComposed مشهد عالم كخلفية كاملة '
-              '(طبقات 2.5D فوقها).',
+              '(طبقات 2.5D فوقها)'
+              '${gradedScenes > 0 ? '، تدرج Look على $gradedScenes مشهد' : ''}.',
             );
           } catch (error) {
             worldPath = null;
