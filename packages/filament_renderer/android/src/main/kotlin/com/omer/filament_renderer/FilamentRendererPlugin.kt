@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Choreographer
 import android.view.Gravity
 import android.view.PixelCopy
@@ -387,6 +388,13 @@ private class FilamentModelPlatformView(
 
     private var captureInProgress = false
     private var captureGeneration = 0
+
+    // Animation time (seconds) set by a stepped capture. While it is >= 0 the
+    // glTF animation of the model is shown at exactly this time instead of at
+    // the live clock (cameraElapsed), so every captured frame is a fixed step
+    // of the animation however long saving the previous frame took. -1 means
+    // "use the live clock". It is only ever set while a capture is running.
+    private var captureClock = -1.0
 
     private var activeModelPath: String? = null
 
@@ -1130,8 +1138,16 @@ private class FilamentModelPlatformView(
         val duration = animator.getAnimationDuration(0)
         if (duration <= 0.001f) return
 
-        val time =
+        // During a stepped capture the clock is set by the capture itself, and
+        // it stays on the last pose at the end of the animation instead of
+        // wrapping around to the first one. Otherwise the live clock loops.
+        val steppedTime = captureClock
+
+        val time = if (steppedTime >= 0.0) {
+            steppedTime.coerceAtMost(duration.toDouble()).toFloat()
+        } else {
             (cameraElapsed % duration.toDouble()).toFloat()
+        }
 
         animator.applyAnimation(0, time)
         animator.updateBoneMatrices()
@@ -1238,6 +1254,22 @@ private class FilamentModelPlatformView(
         val generation = captureGeneration
         val resultSent = AtomicBoolean(false)
 
+        // A manual-camera scene whose model carries a glTF animation (the camera
+        // move of a 3D world is exactly such an animation) is captured with a
+        // STEPPED clock: frame N shows the animation at a fixed time, however
+        // long saving the previous frame took. With the live clock the move ran
+        // at the speed of the phone: every saved frame took longer than one
+        // frame of the clip, so the move played several times too fast and
+        // looped back to its first pose before the clip ended. Any other mode
+        // (the orbit / push presets of the library path) keeps the live clock.
+        val hasAnimation = try {
+            (modelViewer?.animator?.animationCount ?: 0) > 0
+        } catch (_: Throwable) {
+            false
+        }
+
+        val steppedClock = cameraMode == "manual" && hasAnimation
+
         val folder = File(
             appContext.cacheDir,
             "filament_frames_" + System.currentTimeMillis()
@@ -1245,6 +1277,7 @@ private class FilamentModelPlatformView(
 
         if (!folder.mkdirs()) {
             captureInProgress = false
+            captureClock = -1.0
             result.error(
                 "FILAMENT_CAPTURE_STORAGE",
                 "Could not create the frame folder.",
@@ -1256,21 +1289,31 @@ private class FilamentModelPlatformView(
         val frameCount =
             (durationSeconds * frameRate).toInt().coerceIn(6, 240)
 
-        val frameDelayMs =
+        // Stepped clock: the first frame is the animation at 0 and the last one
+        // is the animation at durationSeconds, so the clip holds the whole move
+        // from its first pose to its last. frameCount is at least 6 here.
+        val clockStep = durationSeconds / (frameCount - 1).toDouble()
+
+        // A stepped capture is paced by waiting for fresh frames, not by time.
+        val frameDelayMs = if (steppedClock) {
+            0L
+        } else {
             (1000L / frameRate).coerceAtLeast(1L)
+        }
 
         var frameIndex = 0
 
         fun fail(code: String, message: String) {
             if (resultSent.compareAndSet(false, true)) {
                 captureInProgress = false
+                captureClock = -1.0
                 folder.deleteRecursively()
 
                 result.error(code, message, diagnostics())
             }
         }
 
-        fun captureNext() {
+        fun captureNext(clockReady: Boolean = false) {
             if (resultSent.get()) return
 
             if (disposed || generation != captureGeneration) {
@@ -1284,6 +1327,7 @@ private class FilamentModelPlatformView(
             if (frameIndex >= frameCount) {
                 if (resultSent.compareAndSet(false, true)) {
                     captureInProgress = false
+                    captureClock = -1.0
                     result.success(folder.absolutePath)
                 }
                 return
@@ -1294,6 +1338,37 @@ private class FilamentModelPlatformView(
                     "FILAMENT_SURFACE_LOST",
                     "The render Surface was detached."
                 )
+                return
+            }
+
+            if (steppedClock && !clockReady) {
+                // Put the animation at the time of this frame, then wait until
+                // the render loop has drawn at least two frames with it: the
+                // second one guarantees the first has reached the Surface, so
+                // the copy below never shows the previous step.
+                captureClock = frameIndex * clockStep
+
+                val renderedBefore = framesRendered
+                val waitStarted = SystemClock.uptimeMillis()
+
+                val waitForFreshFrames = object : Runnable {
+                    override fun run() {
+                        if (resultSent.get()) return
+
+                        val fresh = framesRendered - renderedBefore
+                        val waited = SystemClock.uptimeMillis() - waitStarted
+
+                        if (fresh >= 2L || waited >= 700L) {
+                            captureNext(true)
+                        } else {
+                            scheduleFrame()
+                            mainHandler.postDelayed(this, 8L)
+                        }
+                    }
+                }
+
+                scheduleFrame()
+                mainHandler.post(waitForFreshFrames)
                 return
             }
 
@@ -1491,6 +1566,7 @@ private class FilamentModelPlatformView(
         disposed = true
         captureGeneration++
         captureInProgress = false
+        captureClock = -1.0
 
         choreographer.removeFrameCallback(frameCallback)
         frameScheduled = false
