@@ -112,6 +112,47 @@ class Enhancer {
     return ReturnCode.isSuccess(await session.getReturnCode());
   }
 
+  /// True when the image at [path] shows (almost) nothing: fully transparent or
+  /// fully black. A cover like that is useless as a thumbnail, so the caller
+  /// must use the plain frame instead. An image that cannot be read counts as
+  /// blank.
+  static Future<bool> _imageIsBlank(String path) async {
+    ui.Codec? codec;
+    ui.Image? image;
+    try {
+      final bytes = await File(path).readAsBytes();
+      codec = await ui.instantiateImageCodec(bytes);
+      image = (await codec.getNextFrame()).image;
+      final width = image.width;
+      final height = image.height;
+      if (width < 4 || height < 4) return true;
+      final raw = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (raw == null) return true;
+
+      final stepX = math.max(1, width ~/ 64).toInt();
+      final stepY = math.max(1, height ~/ 96).toInt();
+      var total = 0;
+      var visible = 0;
+      for (var y = 0; y < height; y += stepY) {
+        for (var x = 0; x < width; x += stepX) {
+          final offset = (y * width + x) * 4;
+          final r = raw.getUint8(offset);
+          final g = raw.getUint8(offset + 1);
+          final b = raw.getUint8(offset + 2);
+          final a = raw.getUint8(offset + 3);
+          total++;
+          if (a >= 16 && (r > 6 || g > 6 || b > 6)) visible++;
+        }
+      }
+      return total == 0 || visible / total < 0.02;
+    } catch (_) {
+      return true;
+    } finally {
+      image?.dispose();
+      codec?.dispose();
+    }
+  }
+
   static Future<_CoverFrameMetrics?> _inspectCoverFrame(String path) async {
     ui.Codec? codec;
     ui.Image? image;
@@ -359,7 +400,18 @@ class Enhancer {
         png.buffer.asUint8List(png.offsetInBytes, png.lengthInBytes),
         flush: true,
       );
-      return await output.exists() && await output.length() > 0 ? outputPath : null;
+      if (!await output.exists() || await output.length() == 0) return null;
+
+      // A cover that came out fully transparent (or black) is worse than no
+      // cover: the library shows it as an empty white thumbnail. Discard it so
+      // the caller falls back to a plain frame of the video.
+      if (await _imageIsBlank(outputPath)) {
+        try {
+          await output.delete();
+        } catch (_) {}
+        return null;
+      }
+      return outputPath;
     } catch (_) {
       return null;
     } finally {
