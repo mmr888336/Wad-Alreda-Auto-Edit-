@@ -301,16 +301,49 @@ class ThreeDScenePipeline {
   /// The story and the 3D world planned once for the whole video, or null
   /// when the world path is off, there are no captions or the story cannot be
   /// planned (every scene then keeps the old library path).
-  static StoryWorldPlan? _worldPlan(TimelineProject project) {
+  ///
+  /// When the world path is on but no plan comes out, the reason is recorded
+  /// in [summary] (a failed [ThreeDStage.worldPlan] of the whole export), so
+  /// the switch to the old library path is never silent.
+  static StoryWorldPlan? _worldPlan(
+    TimelineProject project, {
+    ThreeDExportSummary? summary,
+  }) {
     if (!worldRenderingEnabled) return null;
 
     final segments = _captionSegments(project);
-    if (segments.isEmpty) return null;
+    if (segments.isEmpty) {
+      summary?.record(
+        0,
+        ThreeDStage.worldPlan,
+        ok: false,
+        detail: 'لا توجد كابشنات صالحة لبناء قصة العالم.',
+      );
+      return null;
+    }
 
     try {
       final plan = StoryWorldBridge.plan(segments);
-      return plan.story.beats.isEmpty ? null : plan;
-    } catch (_) {
+
+      if (plan.story.beats.isEmpty) {
+        summary?.record(
+          0,
+          ThreeDStage.worldPlan,
+          ok: false,
+          detail: 'القصة المقروءة من الكابشن لا تحتوي على لقطات.',
+        );
+        return null;
+      }
+
+      return plan;
+    } catch (error, stackTrace) {
+      summary?.record(
+        0,
+        ThreeDStage.worldPlan,
+        ok: false,
+        detail: 'تعذر تخطيط عالم القصة: $error',
+      );
+      debugPrint('[3D] story world plan failed: $error\n$stackTrace');
       return null;
     }
   }
@@ -724,10 +757,11 @@ class ThreeDScenePipeline {
   /// the old library path. A non-null result is final: either the world was
   /// rendered or the scene goes back to 2.5D.
   ///
-  /// If building the scene throws, the scene also goes back to the old
-  /// library path (null), but the error is no longer silent: it is recorded
-  /// as a failed [ThreeDStage.worldPlan] stage of this scene, so it shows in
-  /// the export log, the crash log file and the 3D report.
+  /// The switch to the old library path is never silent: when the window has
+  /// no story beat, the beat has no world scene, or building the scene throws,
+  /// the reason is recorded as a failed [ThreeDStage.worldPlan] stage of this
+  /// scene, so it shows in the export log, the crash log file and the 3D
+  /// report.
   ///
   /// The camera of the scene comes from the story (see [WorldSceneCamera]):
   /// the SAME camera is carried by the [MotionScene] (the 2.5D layers and the
@@ -754,10 +788,30 @@ class ThreeDScenePipeline {
 
     try {
       final beat = _beatFor(plan.story.beats, cue.start, cue.end);
-      if (beat == null) return null;
+      if (beat == null) {
+        summary.record(
+          sceneNumber,
+          ThreeDStage.worldPlan,
+          ok: false,
+          elapsed: watch.elapsed,
+          detail: 'لا توجد لقطة قصة تغطي نافذة هذا المشهد؛ '
+              'رجوع لمسار المكتبة القديم.',
+        );
+        return null;
+      }
 
       final worldScene = plan.worldSceneOf(beat.index);
-      if (worldScene == null) return null;
+      if (worldScene == null) {
+        summary.record(
+          sceneNumber,
+          ThreeDStage.worldPlan,
+          ok: false,
+          elapsed: watch.elapsed,
+          detail: 'لا يوجد مشهد عالم للقطة ${beat.index}؛ '
+              'رجوع لمسار المكتبة القديم.',
+        );
+        return null;
+      }
 
       final baseMotion = StoryWorldBridge.sceneFor(
         worldScene,
@@ -1146,8 +1200,17 @@ class ThreeDScenePipeline {
     final storyBeats = _storyBeats(timeline);
 
     // The story world, planned once: the same character and one fixed layout
-    // per environment in every scene of the video.
-    final worldPlan = _worldPlan(timeline);
+    // per environment in every scene of the video. A plan that cannot be made
+    // is recorded in the summary (see _worldPlan) and noted here, so the
+    // switch of every scene to the old library path is never silent.
+    final worldPlan = _worldPlan(timeline, summary: summary);
+
+    if (worldRenderingEnabled && worldPlan == null) {
+      notes.add(
+        'تعذر تخطيط عالم القصة؛ كل المشاهد تستخدم مسار المكتبة القديم '
+        '(السبب في سجل 3D).',
+      );
+    }
 
     // Reports live progress for the whole 3D phase (0..1).
     void report(
@@ -1230,6 +1293,15 @@ class ThreeDScenePipeline {
         );
 
         lastWorldCamera = worldOutcome == null ? null : cueCamera;
+
+        // The world plan exists but this scene could not use it: the reason is
+        // in the summary (see _renderWorldCue); the scene takes the old path.
+        if (worldOutcome == null && worldPlan != null) {
+          notes.add(
+            'مشهد $sceneNumber: مسار العالم غير متاح لهذا المشهد؛ '
+            'استُخدم مسار المكتبة القديم (السبب في سجل 3D).',
+          );
+        }
 
         if (worldOutcome != null) {
           final worldResult = worldOutcome.result;
