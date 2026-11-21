@@ -642,10 +642,19 @@ class ThreeDScenePipeline {
   /// copy yet, for example right after a model swap) is transient: the same
   /// model is captured again after a short wait instead of being discarded
   /// and downloading a different one.
+  ///
+  /// [restartCamera] runs after that wait, before every retry. A world scene
+  /// carries its camera move as a rig animation, and the native clock of that
+  /// animation keeps running while the retry waits, so a retry that simply
+  /// captured again would start in the middle of the move and wrap back to
+  /// the first pose before the end of the clip. The callback puts the clock
+  /// back to zero and lets the first hold pass, exactly as before the first
+  /// attempt. Left null (the library path) a retry behaves as before.
   static Future<String> _captureWithRetry({
     required int viewId,
     required double durationSeconds,
     void Function(String message)? onStatus,
+    Future<void> Function()? restartCamera,
   }) async {
     var attempt = 0;
 
@@ -680,6 +689,8 @@ class ThreeDScenePipeline {
         );
 
         await waitUntilRenderable(viewId);
+
+        await restartCamera?.call();
       }
     }
   }
@@ -747,6 +758,22 @@ class ThreeDScenePipeline {
           viewId: viewId,
           durationSeconds: seconds,
           onStatus: onStatus,
+          // The camera move of a world scene is a rig animation in the GLB:
+          // a retry must start it again from its first hold (setting the
+          // camera to manual zeroes the native clock), with the same 350 ms
+          // settle as before the first attempt.
+          restartCamera: () async {
+            await FilamentRenderer.setCameraMotion(
+              viewId: viewId,
+              mode: 'manual',
+            );
+
+            await Future<void>.delayed(
+              const Duration(milliseconds: 350),
+            );
+
+            await waitUntilRenderable(viewId);
+          },
         ),
         verifyClip: (path) =>
             SceneFrameGuard.isClean(path, File(path).parent.path),
