@@ -18,6 +18,14 @@
 /// render never costs a scene. Props that have no picture are handed back to
 /// 2.5D ([RenderRouter.handBack]) instead of vanishing.
 ///
+/// The camera move is an animation inside the GLB. The native capture steps
+/// the clock of that animation itself, frame by frame, from 0 to the length of
+/// the move (see `captureFrames` in FilamentRendererPlugin.kt): the first
+/// frame of the clip is the first pose of the move and the last frame is its
+/// last pose, at any phone speed. That is why the GLB has no rest at its start
+/// (the clock does not run in real time any more, so there is nothing to wait
+/// for) and only a short rest at its end.
+///
 /// The native calls are injected ([World3DNativeOps]) so the whole flow is
 /// tested without a device.
 library;
@@ -55,7 +63,10 @@ class World3DNativeOps {
   /// Completes when the surface draws real frames of the loaded model.
   final Future<void> Function() waitUntilRenderable;
 
-  /// Captures [seconds] of the view and returns the path of the clip.
+  /// Captures [seconds] of the view and returns the path of the clip. The clip
+  /// must show the whole camera move: its first frame is the first pose of the
+  /// move and its last frame is the last pose (the native capture steps the
+  /// animation clock to do exactly that).
   final Future<String> Function(double seconds) capture;
 
   /// True when the clip is clean (no half-decoded green frames). Optional.
@@ -114,9 +125,15 @@ class World3DSceneRunner {
   static const double _minSeconds = 0.5;
   static const double _maxSeconds = 8.0;
 
-  /// Seconds the camera rig rests at the first and the last pose, so the
-  /// capture never starts or ends in the middle of the move.
-  static const double _hold = 0.5;
+  /// Seconds the camera rig rests at the first pose before the move. None: the
+  /// native capture starts its animation clock at 0 on the first captured
+  /// frame, so the move must start right there. A rest here would cut the same
+  /// time off the end of the move.
+  static const double _holdStart = 0.0;
+
+  /// Seconds the camera rig rests at the last pose after the move, so the
+  /// animation is never shorter than the capture.
+  static const double _holdEnd = 0.5;
 
   /// Renders the world of [motion] ([world] is its 3D plan).
   ///
@@ -214,8 +231,8 @@ class World3DSceneRunner {
             planned,
             billboardImages: billboardImages,
             cameraSeconds: seconds,
-            holdStart: _hold,
-            holdEnd: _hold,
+            holdStart: _holdStart,
+            holdEnd: _holdEnd,
           );
           final directory =
               await Directory.systemTemp.createTemp('world3d_scene_');
