@@ -8,6 +8,10 @@
 ///    props) on the colour of the environment, for a scene that fell back
 ///    from 3D to 2.5D.
 ///
+/// With `withLook` the atmosphere particles of the scene's [WorldLook] (dust,
+/// sparks, pollen) are added as one more overlay layer (see
+/// [WorldLookGrade.particleKind]).
+///
 /// The depth camera of the scene is carried over, so the flat layers react to
 /// the same camera as the 3D world. Any failure returns no clip.
 library;
@@ -16,9 +20,10 @@ import 'cinematic_world.dart' show WorldScene;
 import 'motion_cutaway_renderer.dart';
 import 'motion_scene_model.dart';
 import 'reference_scene_builder.dart'
-    show ReferenceSceneResult, SceneAssetSpec;
+    show ReferenceSceneResult, SceneAssetKind, SceneAssetSpec;
 import 'render_router.dart' show SceneRouting;
 import 'story_world_bridge.dart';
+import 'world_look_grade.dart';
 
 class WorldFlatOutcome {
   const WorldFlatOutcome({this.path, this.layerCount = 0, this.error});
@@ -40,6 +45,9 @@ class WorldFlatRenderer {
   /// Same limit as the motion cutaways.
   static const int maxShortSide = 720;
 
+  /// Asset key of the particle layer of the look.
+  static const String particleKey = 'bg:fx_world';
+
   /// Even pixel size (at least 2) for an FFmpeg canvas.
   static int evenSize(double value) {
     var result = value.round();
@@ -57,6 +65,7 @@ class WorldFlatRenderer {
     required int width,
     required int height,
     required String idPrefix,
+    bool withLook = false,
   }) {
     final duration = motion.end - motion.start;
     if (!duration.isFinite || duration <= 0 || width <= 0 || height <= 0) {
@@ -80,7 +89,9 @@ class WorldFlatRenderer {
         if (wholeScene || flatKeys.contains(layer.assetKey)) layer,
     ];
 
-    if (layers.isEmpty) return null;
+    final particles = withLook ? WorldLookGrade.particleKind(world.look) : null;
+
+    if (layers.isEmpty && particles == null) return null;
 
     final assets = <String, SceneAssetSpec>{};
     for (final layer in layers) {
@@ -88,6 +99,39 @@ class WorldFlatRenderer {
       if (key == null) continue;
       final spec = rendering.assets[key];
       if (spec != null) assets[key] = spec;
+    }
+
+    if (particles != null) {
+      layers.add(
+        MotionLayer(
+          id: '${idPrefix}_fx',
+          start: 0,
+          end: duration,
+          zIndex: 2,
+          assetKey: particleKey,
+          keyframes: <MotionKeyframe>[
+            const MotionKeyframe(
+              time: 0,
+              x: 0.5,
+              y: 0.515,
+              scale: 1.06,
+              easing: MotionEase.linear,
+            ),
+            MotionKeyframe(
+              time: duration,
+              x: 0.5,
+              y: 0.485,
+              scale: 1.06,
+              easing: MotionEase.linear,
+            ),
+          ],
+        ),
+      );
+      assets[particleKey] = SceneAssetSpec(
+        kind: SceneAssetKind.overlay,
+        spriteKey: particles,
+        widthFraction: 1.0,
+      );
     }
 
     final scene = MotionScene(
@@ -126,6 +170,7 @@ class WorldFlatRenderer {
     required int index,
     required String fontFamily,
     required List<String> temps,
+    bool withLook = false,
   }) async {
     try {
       final built = build(
@@ -136,6 +181,7 @@ class WorldFlatRenderer {
         width: width,
         height: height,
         idPrefix: idPrefix,
+        withLook: withLook,
       );
 
       if (built == null) return const WorldFlatOutcome();

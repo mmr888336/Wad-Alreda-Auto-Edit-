@@ -4,16 +4,20 @@
 /// "screen" mode on black: only the lit objects survived and floated over the
 /// footage. Here the world IS the picture: during the window of a scene its
 /// clip replaces the video (cover fit, soft fade in and out). The flat layers
-/// drawn by the 2.5D engine (props...) sit on top of it, and a scene that fell
-/// back to 2.5D comes as a ready clip of the whole scene and is composed the
-/// same way. The original audio is kept. Any failure throws, so the caller can
-/// go back to the previous composition.
+/// drawn by the 2.5D engine (props, particles...) sit on top of it, and a
+/// scene that fell back to 2.5D comes as a ready clip of the whole scene and
+/// is composed the same way. A world clip can carry the [WorldLook] of its
+/// scene: it is then graded (tint, key light, vignette) before it is shown.
+/// The original audio is kept. Any failure throws, so the caller can go back
+/// to the previous composition.
 library;
 
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'cinematic_world.dart' show WorldLook;
 import 'silence_cutter.dart';
+import 'world_look_grade.dart';
 
 /// One scene of the world shown as the full picture of the video.
 class WorldBackgroundClip {
@@ -22,6 +26,7 @@ class WorldBackgroundClip {
     required this.start,
     required this.end,
     this.overlayPath,
+    this.look,
   });
 
   /// Clip that replaces the picture (the 3D world, or a whole 2.5D scene).
@@ -34,6 +39,9 @@ class WorldBackgroundClip {
   /// Optional clip of the flat 2.5D layers on black; it is screen-blended on
   /// top of the world.
   final String? overlayPath;
+
+  /// Light and atmosphere used to grade [path]; null leaves it as it is.
+  final WorldLook? look;
 
   double get duration => end - start;
 }
@@ -107,9 +115,15 @@ class WorldBackgroundCommand {
       final clipLabel = 'wb_clip_$index';
       final nextLabel = 'wb_base${index + 1}';
 
+      // The light and the colour of the scene (see WorldLookGrade).
+      final look = clip.look;
+      final grade = look == null ? null : WorldLookGrade.filters(look);
+      final gradePart = grade == null ? '' : '$grade,';
+
       chains.add(
         '[$inputIndex:v]'
         '${_cover(width, height)},'
+        '$gradePart'
         'format=yuva420p,'
         'fade=t=in:st=0:d=${_f(fade)}:alpha=1,'
         'fade=t=out:st=${_f(fadeOutStart)}:d=${_f(fade)}:alpha=1,'
@@ -268,6 +282,7 @@ class WorldSceneCompositor {
           start: start,
           end: end,
           overlayPath: overlay,
+          look: clip.look,
         ),
       );
     }

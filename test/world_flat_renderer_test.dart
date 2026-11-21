@@ -95,6 +95,33 @@ void main() {
 
       expect(built, isNull);
     });
+
+    test('with the look the particles of the scene are one more layer', () {
+      final built = WorldFlatRenderer.build(
+        world: world,
+        motion: motion,
+        routing: RenderRouter.route(motion),
+        wholeScene: false,
+        width: 540,
+        height: 960,
+        idPrefix: 't',
+        withLook: true,
+      );
+
+      expect(built, isNotNull);
+      final scene = built!.project.scenes.single;
+
+      expect(scene.background, '#000000');
+      expect(
+        scene.layers.map((layer) => layer.assetKey).toList(),
+        equals(<String?>[WorldFlatRenderer.particleKey]),
+      );
+      expect(
+        built.assets[WorldFlatRenderer.particleKey]!.spriteKey,
+        'dust',
+      );
+      built.project.validate();
+    });
   });
 
   test('evenSize gives an even size of at least 2', () {
