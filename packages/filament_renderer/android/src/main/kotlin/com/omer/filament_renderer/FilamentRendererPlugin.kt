@@ -15,7 +15,10 @@ import android.view.ViewGroup
 import android.view.MotionEvent
 import android.widget.FrameLayout
 import android.widget.TextView
+import com.google.android.filament.Colors
 import com.google.android.filament.Engine
+import com.google.android.filament.IndirectLight
+import com.google.android.filament.Skybox
 import com.google.android.filament.gltfio.Animator
 import com.google.android.filament.utils.Manipulator
 import com.google.android.filament.utils.ModelViewer
@@ -34,6 +37,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Initializes Filament only when a view is explicitly requested.
@@ -359,6 +363,12 @@ private class FilamentModelPlatformView(
     // They are allocated only after a real 3D request.
     private var cameraManipulator: Manipulator? = null
     private var modelViewer: ModelViewer? = null
+
+    // Lighting resources created by setupLighting(). They are owned by this
+    // view's Filament engine and are destroyed in releaseLighting() right
+    // before the engine itself is destroyed.
+    private var environmentLight: IndirectLight? = null
+    private var environmentSkybox: Skybox? = null
 
     private var surfaceReady = false
     private var modelLoaded = false
@@ -700,6 +710,9 @@ private class FilamentModelPlatformView(
 
                         viewer.transformToUnitCube()
 
+                        // Key light + ambient light + environment background.
+                        setupLighting(viewer)
+
                         // Register our callback before attaching the new view.
                         // ModelViewer's own callback was registered in its ctor.
                         candidateSurface.holder.addCallback(holderCallback)
@@ -765,6 +778,7 @@ private class FilamentModelPlatformView(
                         }
 
                         try {
+                            viewer?.let { releaseLighting(it) }
                             viewer?.destroyModel()
                             viewer?.engine?.destroy()
                         } catch (_: Throwable) {
@@ -782,6 +796,128 @@ private class FilamentModelPlatformView(
         } catch (error: Throwable) {
             failInitialization(error)
         }
+    }
+
+    /**
+     * Configures the lighting of a freshly created ModelViewer:
+     *  - Key light: ModelViewer already owns one directional light entity
+     *    (viewer.light). It is re-tuned here (warm-neutral color, stronger
+     *    intensity, angled from above/front) instead of adding a second
+     *    competing sun.
+     *  - Ambient light: an IndirectLight built from spherical-harmonics
+     *    irradiance (no texture needed) that fills the shadow side.
+     *  - Environment background: a solid Skybox, so the backdrop is the scene
+     *    environment rather than an undefined clear color.
+     *
+     * The IndirectLight and Skybox are tracked so releaseLighting() can
+     * destroy them before the engine is destroyed.
+     */
+    private fun setupLighting(viewer: ModelViewer) {
+        val engine = viewer.engine
+        val scene = viewer.scene
+
+        // --- Key (main) light -------------------------------------------
+        val lightManager = engine.lightManager
+        val keyInstance = lightManager.getInstance(viewer.light)
+
+        if (keyInstance != 0) {
+            val color = Colors.cct(5_800.0f)
+            lightManager.setColor(
+                keyInstance,
+                color[0],
+                color[1],
+                color[2]
+            )
+            lightManager.setIntensity(keyInstance, 110_000.0f)
+
+            val dx = 0.35f
+            val dy = -1.0f
+            val dz = -0.55f
+            val length = sqrt(dx * dx + dy * dy + dz * dz)
+            lightManager.setDirection(
+                keyInstance,
+                dx / length,
+                dy / length,
+                dz / length
+            )
+        }
+
+        // --- Ambient light ----------------------------------------------
+        var ibl: IndirectLight? = null
+        var sky: Skybox? = null
+
+        try {
+            // One SH band (constant ambient), slightly cool tint.
+            ibl = IndirectLight.Builder()
+                .irradiance(1, floatArrayOf(0.50f, 0.52f, 0.58f))
+                .intensity(30_000.0f)
+                .build(engine)
+
+            // --- Environment background -----------------------------------
+            sky = Skybox.Builder()
+                .color(0.16f, 0.20f, 0.28f, 1.0f)
+                .build(engine)
+
+            scene.indirectLight = ibl
+            scene.skybox = sky
+
+            environmentLight = ibl
+            environmentSkybox = sky
+        } catch (error: Throwable) {
+            // Do not leak a half-built environment; let the caller fail.
+            try {
+                scene.indirectLight = null
+                scene.skybox = null
+            } catch (_: Throwable) {
+            }
+            try {
+                ibl?.let { engine.destroyIndirectLight(it) }
+            } catch (_: Throwable) {
+            }
+            try {
+                sky?.let { engine.destroySkybox(it) }
+            } catch (_: Throwable) {
+            }
+            environmentLight = null
+            environmentSkybox = null
+            throw error
+        }
+    }
+
+    /**
+     * Destroys the ambient light and the environment background. Must run
+     * while the engine is still alive, i.e. before Engine.destroy().
+     * The key light entity belongs to ModelViewer and is released with the
+     * engine. Safe to call more than once.
+     */
+    private fun releaseLighting(viewer: ModelViewer) {
+        val engine = viewer.engine
+
+        try {
+            viewer.scene.indirectLight = null
+        } catch (_: Throwable) {
+        }
+
+        try {
+            viewer.scene.skybox = null
+        } catch (_: Throwable) {
+        }
+
+        environmentLight?.let {
+            try {
+                engine.destroyIndirectLight(it)
+            } catch (_: Throwable) {
+            }
+        }
+        environmentLight = null
+
+        environmentSkybox?.let {
+            try {
+                engine.destroySkybox(it)
+            } catch (_: Throwable) {
+            }
+        }
+        environmentSkybox = null
     }
 
     private fun readBundledModel(context: Context): ByteBuffer {
@@ -1469,7 +1605,8 @@ private class FilamentModelPlatformView(
      *  4. Detach the SurfaceView and wait until Android reports that its
      *     Surface was destroyed (Filament's own callback, registered first,
      *     has then already detached and flushed its SwapChain).
-     *  5. Destroy the Filament Engine exactly once.
+     *  5. Destroy the lighting resources (ambient light + environment
+     *     background), then the Filament Engine exactly once.
      *  6. Only then answer Flutter, so Flutter can safely remove the
      *     PlatformView.
      *
@@ -1607,6 +1744,10 @@ private class FilamentModelPlatformView(
                 )
             } else {
                 engineDestroyed = true
+
+                // Ambient light + environment background must be destroyed
+                // while the engine is still alive.
+                releaseLighting(viewer)
 
                 try {
                     viewer.engine.flushAndWait()
