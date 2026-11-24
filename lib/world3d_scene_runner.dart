@@ -15,8 +15,10 @@
 ///
 /// Any failure (a thrown error, a rejected GLB, a bad clip) returns the whole
 /// scene to the 2.5D engine through [RenderRouter.fallbackOf]: a failed 3D
-/// render never costs a scene. Props that have no picture are handed back to
-/// 2.5D ([RenderRouter.handBack]) instead of vanishing.
+/// render never costs a scene. A clip that is corrupt (green frames) or empty
+/// (black, transparent, one flat colour) is a bad clip too. Props that have no
+/// picture are handed back to 2.5D ([RenderRouter.handBack]) instead of
+/// vanishing.
 ///
 /// The native calls are injected ([World3DNativeOps]) so the whole flow is
 /// tested without a device.
@@ -58,7 +60,8 @@ class World3DNativeOps {
   /// Captures [seconds] of the view and returns the path of the clip.
   final Future<String> Function(double seconds) capture;
 
-  /// True when the clip is clean (no half-decoded green frames). Optional.
+  /// True when the clip is clean (no half-decoded green frames, and not black,
+  /// transparent or empty). Optional.
   final Future<bool> Function(String clipPath)? verifyClip;
 }
 
@@ -284,7 +287,9 @@ class World3DSceneRunner {
             try {
               await file.delete();
             } catch (_) {}
-            throw StateError('إطارات المشهد تالفة (شاشة خضراء).');
+            throw StateError(
+              'إطارات المشهد غير صالحة (شاشة خضراء أو سوداء أو فارغة).',
+            );
           }
           return clipPath;
         },
