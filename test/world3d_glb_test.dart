@@ -175,16 +175,39 @@ void main() {
       }
     });
 
-    test('the character is built from six parts with three materials', () {
+    test('the character is built from many rounded parts and materials', () {
       final glb = World3DGlbBuilder.build(World3DPlanner.plan(_scene()));
       final json = _json(glb.bytes);
       final nodes = json['nodes'] as List;
       final hero = nodes.firstWhere((n) => n['name'] == 'w0_hero');
       final mesh = (json['meshes'] as List)[hero['mesh']];
       final primitives = mesh['primitives'] as List;
-      expect(primitives, hasLength(6));
+
+      // Shoes, legs, belt, waist, chest, shoulders, arms, hands, neck, head,
+      // hair and the face: far more than the six boxes it used to be.
+      expect(primitives.length, greaterThanOrEqualTo(18));
+
+      // Body, legs, belt, skin, shoes, hair, eyes, nose, mouth.
       final used = <int>{for (final p in primitives) p['material'] as int};
-      expect(used, hasLength(3));
+      expect(used.length, greaterThanOrEqualTo(8));
+    });
+
+    test('the character stays inside its box and rests on the ground', () {
+      final scene = World3DPlanner.plan(_scene());
+      final hero = scene.objects.firstWhere((o) => o.id == 'w0_hero');
+      final glb = World3DGlbBuilder.buildObjects(<World3DObject>[hero]);
+
+      final lowX = hero.position.x - hero.size.x / 2;
+      final highX = hero.position.x + hero.size.x / 2;
+      final lowY = hero.position.y - hero.size.y / 2;
+      final highY = hero.position.y + hero.size.y / 2;
+      const tolerance = 1e-6;
+
+      expect(glb.bounds.min.x, greaterThanOrEqualTo(lowX - tolerance));
+      expect(glb.bounds.max.x, lessThanOrEqualTo(highX + tolerance));
+      expect(glb.bounds.min.y, closeTo(lowY, tolerance));
+      expect(glb.bounds.max.y, lessThanOrEqualTo(highY + tolerance));
+      expect(GlbInspector.inspect(glb.bytes).isSafe, isTrue);
     });
 
     test('the position is baked into the vertices, not into the node', () {
