@@ -155,7 +155,14 @@ void main() {
               ),
             ],
           ),
-          _layer(id: 'title', type: TimelineLayerType.title),
+          // Later start, so the order of the two results does not depend on a
+          // tie between equal start times.
+          _layer(
+            id: 'title',
+            type: TimelineLayerType.title,
+            start: 2.0,
+            end: 3.0,
+          ),
           _layer(id: 'hidden', type: TimelineLayerType.caption, visible: false),
           _layer(id: 'nopath', type: TimelineLayerType.caption, path: null),
           _layer(id: 'shape', type: TimelineLayerType.shape),

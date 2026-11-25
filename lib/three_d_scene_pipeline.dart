@@ -30,6 +30,7 @@ import 'timeline_engine.dart';
 import 'visual_tracking_engine.dart';
 import 'world3d_scene_runner.dart';
 import 'world_flat_renderer.dart';
+import 'world_look_grade.dart';
 import 'world_scene_camera.dart';
 import 'world_scene_compositor.dart';
 
@@ -105,7 +106,8 @@ class _WorldEntry {
 ///   window, builds its [WorldScene] and [MotionScene] and renders the 3D
 ///   WORLD through the render router ([renderWorldScene]): plan, GLB,
 ///   inspection, Filament load, manual camera, capture. A scene whose world
-///   fails goes back to the 2.5D engine.
+///   fails goes back to the 2.5D engine. A clip that is black, transparent or
+///   flat is a failure too (see [SceneFrameGuard]).
 /// - Only when the world path is not available for a scene (no story, the
 ///   switch [worldRenderingEnabled] is off) it falls back to the old path:
 ///   turns the spoken words into English search keywords, searches and
@@ -118,11 +120,14 @@ class _WorldEntry {
 ///   The camera of a world scene is the same for the 3D world and for the
 ///   2.5D layers (it is carried by the [MotionScene]).
 /// - Composes the world scenes as the FULL BACKGROUND of their windows (see
-///   [WorldSceneCompositor]): the captured world is the picture, the flat
-///   2.5D layers are drawn on top of it, and a scene that fell back to 2.5D
-///   is drawn whole by the 2.5D engine ([WorldFlatRenderer]). If that
-///   composition fails, the world clips go back to the previous "screen"
-///   composition. Switch: [worldBackgroundEnabled].
+///   [WorldSceneCompositor]): the captured world is the picture, graded with
+///   the [WorldLook] of the scene ([WorldLookGrade]), the flat 2.5D layers
+///   (and the atmosphere particles of the look) are drawn on top of it, the
+///   person of the video is cut out and drawn above the world, and the
+///   captions and the hook title are drawn again on top of everything. A scene
+///   that fell back to 2.5D is drawn whole by the 2.5D engine
+///   ([WorldFlatRenderer]). If that composition fails, the world clips go back
+///   to the previous "screen" composition. Switch: [worldBackgroundEnabled].
 /// - Tracks the main person (Phase 1) and anchors each library 3D scene to
 ///   them (Phase 2); scenes that cannot be anchored keep the old panel.
 /// - Composites rendered library scenes into the exported video.
@@ -794,10 +799,12 @@ class ThreeDScenePipeline {
   /// Draws the 2.5D part of every world scene and returns the clips for the
   /// full-background composition:
   /// - a scene rendered in 3D: its world clip, plus (when there are flat
-  ///   layers) a 2.5D clip of those layers to go on top;
+  ///   layers or look particles) a 2.5D clip of those layers to go on top;
   /// - a scene that fell back: a 2.5D clip of the whole scene.
-  /// A failure here never stops the export: the world clip is used without
-  /// the flat layers, and a fallback scene stays as it is in the video.
+  /// Every clip carries the [WorldLook] of its scene (when [WorldLookGrade] is
+  /// enabled), so the compositor grades it and the atmosphere particles are
+  /// drawn. A failure here never stops the export: the world clip is used
+  /// without the flat layers, and a fallback scene stays as it is in the video.
   static Future<List<WorldBackgroundClip>> _prepareWorldClips({
     required List<_WorldEntry> entries,
     required String videoPath,
@@ -845,6 +852,7 @@ class ThreeDScenePipeline {
     final font =
         settings.captionFont == 'auto' ? 'Cairo' : settings.captionFont;
     final temps = <String>[];
+    final gradeLook = WorldLookGrade.enabled;
 
     for (var index = 0; index < entries.length; index++) {
       final entry = entries[index];
@@ -889,6 +897,7 @@ class ThreeDScenePipeline {
           index: index,
           fontFamily: font,
           temps: temps,
+          withLook: gradeLook,
         );
       }
 
@@ -928,6 +937,7 @@ class ThreeDScenePipeline {
             start: entry.cue.start,
             end: entry.cue.end,
             overlayPath: overlay,
+            look: gradeLook ? entry.world.look : null,
           ),
         );
       } else {
@@ -962,6 +972,7 @@ class ThreeDScenePipeline {
               path: path,
               start: entry.cue.start,
               end: entry.cue.end,
+              look: gradeLook ? entry.world.look : null,
             ),
           );
         }
@@ -1532,16 +1543,18 @@ class ThreeDScenePipeline {
             'مشهد $sceneNumber: ${keywords.take(3).join('، ')} ← ${usedAsset.title}',
           );
 
-          // A capture that never finished decodes as a bright green band;
-          // such a scene is dropped instead of being shown over the speaker.
-          final cleanFrames = await SceneFrameGuard.isClean(
+          // A capture that never finished decodes as a bright green band, and a
+          // model that got no light is captured black or empty; such a scene is
+          // dropped instead of being shown over the speaker.
+          final frameVerdict = await SceneFrameGuard.inspect(
             scenePath,
             File(scenePath).parent.path,
           );
-          if (!cleanFrames) {
-            notes.add(
-              'مشهد $sceneNumber: إطارات المجسم تالفة (شاشة خضراء)؛ تم تخطيه بدل عرضه.',
-            );
+          if (frameVerdict != SceneFrameVerdict.clean) {
+            final reason = frameVerdict == SceneFrameVerdict.blank
+                ? 'إطارات المجسم سوداء أو فارغة'
+                : 'إطارات المجسم تالفة (شاشة خضراء)';
+            notes.add('مشهد $sceneNumber: $reason؛ تم تخطيه بدل عرضه.');
             try {
               File(scenePath).deleteSync();
             } catch (_) {}
@@ -1687,6 +1700,9 @@ class ThreeDScenePipeline {
               clips: worldClips,
               duration: timeline.duration,
               maximumQuality: settings.maximumQuality,
+              // The captions and the hook title are drawn again on top of the
+              // world, and the person is cut out of the video above it.
+              textOverlays: WorldTextOverlay.fromTimeline(timeline),
               onStatus: onStatus,
               onProgress: (value) => report(
                 _worldCompositeStart +
@@ -1709,7 +1725,7 @@ class ThreeDScenePipeline {
             );
             notes.add(
               'التركيب: $worldComposed مشهد عالم كخلفية كاملة '
-              '(طبقات 2.5D فوقها).',
+              '(الشخص والكابشن وطبقات 2.5D فوقها).',
             );
           } catch (error) {
             worldPath = null;
