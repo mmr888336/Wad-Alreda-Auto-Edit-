@@ -640,7 +640,8 @@ class World3DGlbBuilder {
   /// arms with sleeves, hands, neck, head, hair and a face (eyes, nose, mouth).
   /// Every part is an ellipsoid or an elliptical cylinder, so the figure has no
   /// hard box corners. The whole figure stays inside the width, height and
-  /// depth of the box, so the camera framing of the scene does not change.
+  /// depth of the box (it rests on the bottom of it), so the camera framing of
+  /// the scene does not change.
   static List<_Part> _characterParts(World3DObject o) {
     final w = o.size.x;
     final h = o.size.y;
@@ -686,17 +687,17 @@ class World3DGlbBuilder {
       _Part(column(0.125 * w, 0.34 * h, 0.22 * d, -0.2 * w, y(0.21), 0), legs),
       _Part(column(0.125 * w, 0.34 * h, 0.22 * d, 0.2 * w, y(0.21), 0), legs),
       // Belt, waist and chest.
-      _Part(column(0.35 * w, 0.04 * h, 0.29 * d, 0, y(0.405), 0), belt),
-      _Part(column(0.34 * w, 0.16 * h, 0.28 * d, 0, y(0.49), 0), body),
-      _Part(ellipsoid(0.40 * w, 0.17 * h, 0.32 * d, 0, y(0.62), 0), body),
+      _Part(column(0.30 * w, 0.04 * h, 0.26 * d, 0, y(0.405), 0), belt),
+      _Part(column(0.29 * w, 0.16 * h, 0.25 * d, 0, y(0.49), 0), body),
+      _Part(ellipsoid(0.34 * w, 0.17 * h, 0.29 * d, 0, y(0.62), 0), body),
       // Shoulders and sleeves.
-      _Part(ellipsoid(0.11 * w, 0.075 * h, 0.15 * d, -0.41 * w, y(0.70), 0), body),
-      _Part(ellipsoid(0.11 * w, 0.075 * h, 0.15 * d, 0.41 * w, y(0.70), 0), body),
-      _Part(column(0.075 * w, 0.27 * h, 0.12 * d, -0.46 * w, y(0.55), 0), body),
-      _Part(column(0.075 * w, 0.27 * h, 0.12 * d, 0.46 * w, y(0.55), 0), body),
+      _Part(ellipsoid(0.10 * w, 0.075 * h, 0.14 * d, -0.385 * w, y(0.70), 0), body),
+      _Part(ellipsoid(0.10 * w, 0.075 * h, 0.14 * d, 0.385 * w, y(0.70), 0), body),
+      _Part(column(0.07 * w, 0.27 * h, 0.11 * d, -0.425 * w, y(0.55), 0), body),
+      _Part(column(0.07 * w, 0.27 * h, 0.11 * d, 0.425 * w, y(0.55), 0), body),
       // Hands.
-      _Part(ellipsoid(0.07 * w, 0.045 * h, 0.09 * d, -0.46 * w, y(0.39), 0), _skin),
-      _Part(ellipsoid(0.07 * w, 0.045 * h, 0.09 * d, 0.46 * w, y(0.39), 0), _skin),
+      _Part(ellipsoid(0.065 * w, 0.045 * h, 0.085 * d, -0.425 * w, y(0.39), 0), _skin),
+      _Part(ellipsoid(0.065 * w, 0.045 * h, 0.085 * d, 0.425 * w, y(0.39), 0), _skin),
       // Neck and head.
       _Part(column(0.07 * w, 0.06 * h, 0.08 * d, 0, y(0.80), 0), _skin),
       _Part(ellipsoid(0.2 * w, 0.11 * h, 0.25 * d, 0, y(0.89), 0), _skin),
