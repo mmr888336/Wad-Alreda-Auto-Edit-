@@ -8,6 +8,15 @@
 /// scene that fell back to 2.5D comes as a ready clip of the whole scene and
 /// is composed the same way. A world clip can carry the [WorldLook] of its
 /// scene: it is then graded (tint, key light, vignette) before it is shown.
+///
+/// Because the world replaces the whole picture, two things of the video would
+/// disappear inside a scene window, and both are put back on top of the world:
+///  * the PERSON: cut out of the original video with a per-frame matte
+///    ([WorldBackgroundClip.matte]). The cut-out is made of the very pixels of
+///    the video, so it matches the picture underneath during the fades;
+///  * the CAPTIONS and the hook title: their PNG layers are drawn again on top
+///    ([WorldTextOverlay]).
+///
 /// The original audio is kept. Any failure throws, so the caller can go back
 /// to the previous composition.
 library;
@@ -15,8 +24,13 @@ library;
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:path_provider/path_provider.dart';
+
 import 'cinematic_world.dart' show WorldLook;
+import 'person_segmentation_matte.dart';
+import 'person_silhouette.dart' show PersonMatteSequence;
 import 'silence_cutter.dart';
+import 'timeline_engine.dart';
 import 'world_look_grade.dart';
 
 /// One scene of the world shown as the full picture of the video.
@@ -27,6 +41,7 @@ class WorldBackgroundClip {
     required this.end,
     this.overlayPath,
     this.look,
+    this.matte,
   });
 
   /// Clip that replaces the picture (the 3D world, or a whole 2.5D scene).
@@ -43,7 +58,81 @@ class WorldBackgroundClip {
   /// Light and atmosphere used to grade [path]; null leaves it as it is.
   final WorldLook? look;
 
+  /// Per-frame matte of the person in the window (white = person). When set,
+  /// the person of the original video is drawn on top of the world.
+  final PersonMatteSequence? matte;
+
   double get duration => end - start;
+
+  WorldBackgroundClip withMatte(PersonMatteSequence? value) =>
+      WorldBackgroundClip(
+        path: path,
+        start: start,
+        end: end,
+        overlayPath: overlayPath,
+        look: look,
+        matte: value,
+      );
+}
+
+/// A caption or title picture (PNG) that is drawn again on top of the world.
+class WorldTextOverlay {
+  const WorldTextOverlay({
+    required this.path,
+    required this.start,
+    required this.end,
+    required this.y,
+  });
+
+  final String path;
+
+  /// Window of the layer in the video, in seconds.
+  final double start;
+  final double end;
+
+  /// Vertical centre of the picture, 0..1 of the frame height.
+  final double y;
+
+  /// Most overlays one composition carries (each one is an FFmpeg input).
+  static const int maxCount = 60;
+
+  /// The caption and title layers of [project] that have a picture.
+  static List<WorldTextOverlay> fromTimeline(TimelineProject project) {
+    final result = <WorldTextOverlay>[];
+
+    for (final layer in project.layers) {
+      if (!layer.visible) continue;
+      if (layer.type != TimelineLayerType.caption &&
+          layer.type != TimelineLayerType.title) {
+        continue;
+      }
+
+      final path = layer.sourcePath;
+      if (path == null || path.trim().isEmpty) continue;
+      if (!layer.start.isFinite ||
+          !layer.end.isFinite ||
+          layer.end <= layer.start) {
+        continue;
+      }
+
+      final fallbackY = layer.type == TimelineLayerType.title ? 0.10 : 0.80;
+      final rawY =
+          layer.keyframes.isEmpty ? fallbackY : layer.transformAt(layer.end).y;
+      final y = rawY.isFinite ? rawY.clamp(0.02, 0.98).toDouble() : fallbackY;
+
+      result.add(
+        WorldTextOverlay(
+          path: path,
+          start: layer.start,
+          end: layer.end,
+          y: y,
+        ),
+      );
+    }
+
+    result.sort((a, b) => a.start.compareTo(b.start));
+    return result;
+  }
 }
 
 /// The inputs and the filter graph of one composition (pure Dart).
@@ -86,6 +175,7 @@ class WorldBackgroundCommand {
     required int width,
     required int height,
     required List<WorldBackgroundClip> clips,
+    List<WorldTextOverlay> textOverlays = const <WorldTextOverlay>[],
   }) {
     if (clips.isEmpty) {
       throw ArgumentError('لا توجد مشاهد عالم لتركيبها.');
@@ -115,8 +205,9 @@ class WorldBackgroundCommand {
       final clipLabel = 'wb_clip_$index';
       final nextLabel = 'wb_base${index + 1}';
 
-      // The light and the colour of the scene (see WorldLookGrade).
-      final look = clip.look;
+      // The light and the colour of the scene (see WorldLookGrade). The master
+      // switch of the grade is honoured here too.
+      final look = WorldLookGrade.enabled ? clip.look : null;
       final grade = look == null ? null : WorldLookGrade.filters(look);
       final gradePart = grade == null ? '' : '$grade,';
 
@@ -185,6 +276,89 @@ class WorldBackgroundCommand {
       }
     }
 
+    final mattedClips = <int>[
+      for (var index = 0; index < clips.length; index++)
+        if (clips[index].matte != null) index,
+    ];
+
+    final texts = <WorldTextOverlay>[];
+    for (final overlay in textOverlays) {
+      if (texts.length >= WorldTextOverlay.maxCount) break;
+      if (_windowsOf(overlay, clips).isNotEmpty) texts.add(overlay);
+    }
+
+    if (mattedClips.isNotEmpty || texts.isNotEmpty) {
+      chains.add('[$current]format=yuv420p[wb_yuv]');
+      current = 'wb_yuv';
+    }
+
+    // 3. The person of the original video, cut out, on top of the world. It
+    // reads ITS OWN short window of the video (-ss/-t), so no full-size stream
+    // is buffered. The cut-out is made of the pixels of the video itself, so
+    // it matches the picture underneath while the world fades in and out.
+    for (final index in mattedClips) {
+      final clip = clips[index];
+      final matte = clip.matte!;
+      final start = _f(clip.start);
+      final end = _f(clip.end);
+      final windowSeconds = _f(math.max(0.2, clip.duration + 0.1));
+
+      inputs.add('-ss $start -t $windowSeconds -i "$videoPath"');
+      final personIndex = inputs.length - 1;
+      inputs.add('-framerate ${_f(matte.fps)} -i "${matte.pattern}"');
+      final matteIndex = inputs.length - 1;
+
+      final matteLabel = 'wb_matte_$index';
+      final windowLabel = 'wb_win_$index';
+      final cutLabel = 'wb_cut_$index';
+      final topLabel = 'wb_top_$index';
+
+      chains.add(
+        '[$matteIndex:v]setpts=PTS-STARTPTS+$start/TB,'
+        'scale=$width:$height:flags=bilinear,'
+        'gblur=sigma=2.5,format=gray[$matteLabel]',
+      );
+      chains.add(
+        '[$personIndex:v]scale=$width:$height:flags=lanczos,setsar=1,'
+        'format=yuv420p,setpts=PTS-STARTPTS+$start/TB[$windowLabel]',
+      );
+      chains.add('[$windowLabel][$matteLabel]alphamerge[$cutLabel]');
+      chains.add(
+        '[$current][$cutLabel]overlay=x=0:y=0:'
+        "eof_action=pass:repeatlast=0:enable='between(t,$start,$end)'"
+        '[$topLabel]',
+      );
+      current = topLabel;
+    }
+
+    // 4. The captions and the hook title, drawn again on top of everything.
+    for (var index = 0; index < texts.length; index++) {
+      final overlay = texts[index];
+      final windows = _windowsOf(overlay, clips);
+      final duration = math.max(0.1, overlay.end - overlay.start);
+
+      inputs.add(
+        '-loop 1 -framerate 30 -t ${_f(duration + 0.1)} -i "${overlay.path}"',
+      );
+      final inputIndex = inputs.length - 1;
+
+      final textLabel = 'wb_txt_$index';
+      final outLabel = 'wb_txtout_$index';
+
+      chains.add(
+        '[$inputIndex:v]scale=$width:-2:flags=lanczos,format=rgba,'
+        'setpts=PTS-STARTPTS+${_f(overlay.start)}/TB[$textLabel]',
+      );
+      chains.add(
+        "[$current][$textLabel]overlay=x='(main_w-overlay_w)/2':"
+        "y='main_h*${_f(overlay.y)}-overlay_h/2':"
+        'eof_action=pass:repeatlast=0:'
+        "enable='${windows.join('+')}'"
+        '[$outLabel]',
+      );
+      current = outLabel;
+    }
+
     chains.add('[$current]format=yuv420p[$outputLabel]');
 
     return WorldBackgroundPlan(
@@ -192,6 +366,23 @@ class WorldBackgroundCommand {
       filterComplex: chains.join(';'),
       outputLabel: outputLabel,
     );
+  }
+
+  /// `between(...)` terms for the parts of [overlay] that fall inside a world
+  /// clip window (empty when it never does).
+  static List<String> _windowsOf(
+    WorldTextOverlay overlay,
+    List<WorldBackgroundClip> clips,
+  ) {
+    final windows = <String>[];
+    for (final clip in clips) {
+      final from = math.max(overlay.start, clip.start);
+      final to = math.min(overlay.end, clip.end);
+      if (to - from >= 0.05) {
+        windows.add('between(t,${_f(from)},${_f(to)})');
+      }
+    }
+    return windows;
   }
 
   /// The full FFmpeg command (audio of the first input is kept).
@@ -220,6 +411,10 @@ class WorldBackgroundCommand {
 class WorldSceneCompositor {
   WorldSceneCompositor._();
 
+  /// Switch: draw the person of the video on top of the world scenes. Any
+  /// failure to cut the person out leaves that scene as it was (world only).
+  static bool keepPersonEnabled = true;
+
   /// Composes [clips] over [videoPath] and returns the new file (next to the
   /// source). Throws on any failure; the source is never touched.
   static Future<String> composite({
@@ -227,6 +422,7 @@ class WorldSceneCompositor {
     required List<WorldBackgroundClip> clips,
     required double duration,
     bool maximumQuality = true,
+    List<WorldTextOverlay> textOverlays = const <WorldTextOverlay>[],
     void Function(String message)? onStatus,
     void Function(double progress)? onProgress,
   }) async {
@@ -302,46 +498,153 @@ class WorldSceneCompositor {
       throw StateError('كل مشاهد العالم غير صالحة أو خارج مدة الفيديو.');
     }
 
+    // The captions and the title that fall inside a world window, and whose
+    // picture is still on disk.
+    final texts = <WorldTextOverlay>[];
+    for (final overlay in textOverlays) {
+      if (texts.length >= WorldTextOverlay.maxCount) break;
+
+      final overlaps = ordered.any(
+        (clip) =>
+            math.min(overlay.end, clip.end) -
+                math.max(overlay.start, clip.start) >=
+            0.05,
+      );
+      if (!overlaps) continue;
+      if (!await File(overlay.path).exists()) continue;
+
+      texts.add(overlay);
+    }
+
     final stamp = DateTime.now().millisecondsSinceEpoch;
     final outputPath = '${sourceFile.parent.path}/world_bg_composite_$stamp.mp4';
 
-    final plan = WorldBackgroundCommand.build(
-      videoPath: videoPath,
-      width: info.w,
-      height: info.h,
-      clips: ordered,
-    );
+    Directory? work;
 
-    final command = WorldBackgroundCommand.command(
-      plan: plan,
-      outputPath: outputPath,
-      duration: duration,
-      maximumQuality: maximumQuality,
-    );
+    try {
+      // The person of the video, cut out for every scene window.
+      var composed = ordered;
 
-    onStatus?.call(
-      'جاري تركيب ${ordered.length} مشاهد عالم كخلفية كاملة...',
-    );
+      if (keepPersonEnabled) {
+        try {
+          final temp = await getTemporaryDirectory();
+          final created = Directory('${temp.path}/world_person_$stamp');
+          await created.create(recursive: true);
+          work = created;
+        } catch (_) {
+          work = null;
+        }
+      }
 
-    final encoded = await SilenceCutter.encode(command, duration, onProgress);
+      final folder = work;
+      if (folder != null) {
+        composed = <WorldBackgroundClip>[];
 
-    final outputFile = File(outputPath);
+        for (var index = 0; index < ordered.length; index++) {
+          final clip = ordered[index];
+          onStatus?.call('جاري قص الشخص للمشهد ${index + 1}...');
 
-    if (!encoded ||
-        !await outputFile.exists() ||
-        await outputFile.length() < 4096) {
-      try {
-        if (await outputFile.exists()) await outputFile.delete();
-      } catch (_) {}
+          PersonMatteSequence? matte;
+          try {
+            matte = await PersonSegmentationMatte.render(
+              videoPath: videoPath,
+              start: clip.start,
+              end: clip.end,
+              directory: '${folder.path}/matte_$index',
+              frameWidth: info.w,
+              frameHeight: info.h,
+            );
+          } catch (_) {
+            matte = null;
+          }
 
-      throw FileSystemException(
-        'فشل تركيب العالم كخلفية كاملة.',
-        outputPath,
+          composed.add(clip.withMatte(matte));
+        }
+      }
+
+      final plan = WorldBackgroundCommand.build(
+        videoPath: videoPath,
+        width: info.w,
+        height: info.h,
+        clips: composed,
+        textOverlays: texts,
       );
+
+      final command = WorldBackgroundCommand.command(
+        plan: plan,
+        outputPath: outputPath,
+        duration: duration,
+        maximumQuality: maximumQuality,
+      );
+
+      onStatus?.call(
+        'جاري تركيب ${composed.length} مشاهد عالم كخلفية كاملة...',
+      );
+
+      var encoded = await SilenceCutter.encode(command, duration, onProgress);
+
+      var outputFile = File(outputPath);
+
+      // The person and the captions are extras: if their graph cannot be
+      // encoded, the plain world composition is encoded instead.
+      final hasExtras =
+          texts.isNotEmpty || composed.any((clip) => clip.matte != null);
+
+      if ((!encoded ||
+              !await outputFile.exists() ||
+              await outputFile.length() < 4096) &&
+          hasExtras) {
+        try {
+          if (await outputFile.exists()) await outputFile.delete();
+        } catch (_) {}
+
+        onStatus?.call('جاري تركيب العالم بدون الشخص والكابشن...');
+
+        final plainPlan = WorldBackgroundCommand.build(
+          videoPath: videoPath,
+          width: info.w,
+          height: info.h,
+          clips: <WorldBackgroundClip>[
+            for (final clip in composed) clip.withMatte(null),
+          ],
+        );
+
+        encoded = await SilenceCutter.encode(
+          WorldBackgroundCommand.command(
+            plan: plainPlan,
+            outputPath: outputPath,
+            duration: duration,
+            maximumQuality: maximumQuality,
+          ),
+          duration,
+          onProgress,
+        );
+        outputFile = File(outputPath);
+      }
+
+      if (!encoded ||
+          !await outputFile.exists() ||
+          await outputFile.length() < 4096) {
+        try {
+          if (await outputFile.exists()) await outputFile.delete();
+        } catch (_) {}
+
+        throw FileSystemException(
+          'فشل تركيب العالم كخلفية كاملة.',
+          outputPath,
+        );
+      }
+
+      onStatus?.call('اكتمل تركيب العالم كخلفية كاملة.');
+
+      return outputPath;
+    } finally {
+      final folder = work;
+      if (folder != null) {
+        try {
+          if (await folder.exists()) await folder.delete(recursive: true);
+        } catch (_) {}
+      }
     }
-
-    onStatus?.call('اكتمل تركيب العالم كخلفية كاملة.');
-
-    return outputPath;
   }
 }

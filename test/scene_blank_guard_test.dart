@@ -60,10 +60,9 @@ void main() {
       expect(stats.dark, 0.0);
     });
 
-    test('a dark but lit scene colour is not black', () {
-      // The old placeholder of the view, rgb(13, 16, 25), is black; a night
-      // room wall (rgb(32, 40, 62)) is not.
-      expect(_stats(_solid(8, 8, 13, 16, 25), 8, 8).dark, 1.0);
+    test('a near-black frame is dark, a lit night wall is not', () {
+      // luma(8, 10, 14) is about 9.9 (black); luma(32, 40, 62) is about 40.
+      expect(_stats(_solid(8, 8, 8, 10, 14), 8, 8).dark, 1.0);
       expect(_stats(_solid(8, 8, 32, 40, 62), 8, 8).dark, 0.0);
     });
 
