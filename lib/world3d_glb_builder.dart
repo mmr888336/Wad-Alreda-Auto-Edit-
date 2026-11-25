@@ -5,8 +5,9 @@
 /// props) is rendered by the plugin that already exists, with no native change.
 ///
 ///  * box, sphere and cylinder set pieces become real meshes with normals;
-///  * the character is assembled from simple parts (legs, torso, arms, head)
-///    with their own materials;
+///  * the character is assembled from rounded parts (shoes, legs, belt, torso,
+///    shoulders, arms, hands, neck, head, hair and a face with eyes, nose and
+///    mouth), each with its own material;
 ///  * a prop (billboard) becomes a textured quad when the caller supplies its
 ///    picture (PNG bytes, keyed by the asset key of the layer); without a
 ///    picture it is skipped and listed in [World3DGlb.skipped];
@@ -177,6 +178,10 @@ class World3DGlbBuilder {
   };
 
   static const String _skin = '#F1C7A1';
+  static const String _hair = '#2B1B12';
+  static const String _shoe = '#23232B';
+  static const String _eye = '#14121A';
+  static const String _mouth = '#A5524A';
 
   /// The GLB of [scene]. [billboardImages] maps the asset key of a prop layer
   /// (`decor:coins`) to the PNG bytes of its picture. With [cameraSeconds] the
@@ -630,33 +635,79 @@ class World3DGlbBuilder {
     }
   }
 
-  /// The hero: legs, torso, arms and head inside the box [o.size], centred on
-  /// the object position.
+  /// The hero, built from rounded parts inside the box [o.size], centred on the
+  /// object position and facing +z: shoes, legs, belt, waist, chest, shoulders,
+  /// arms with sleeves, hands, neck, head, hair and a face (eyes, nose, mouth).
+  /// Every part is an ellipsoid or an elliptical cylinder, so the figure has no
+  /// hard box corners. The whole figure stays inside the width, height and
+  /// depth of the box, so the camera framing of the scene does not change.
   static List<_Part> _characterParts(World3DObject o) {
     final w = o.size.x;
     final h = o.size.y;
     final d = o.size.z;
     final body = o.color;
     final legs = _shadeHex(body, 0.55);
+    final belt = _shadeHex(body, 0.35);
+    final noseColor = _shadeHex(_skin, 0.92);
 
     double y(double fromBottom) => -h / 2 + fromBottom * h;
 
-    _Mesh boxAt(double bw, double bh, double bd, double x, double cy) {
-      final mesh = _Geometry.box(bw, bh, bd);
-      mesh.shift(x, cy, 0);
+    _Mesh ellipsoid(
+      double rx,
+      double ry,
+      double rz,
+      double cx,
+      double cy,
+      double cz,
+    ) {
+      final mesh = _Geometry.sphere(rx, ry, rz, 16);
+      mesh.shift(cx, cy, cz);
       return mesh;
     }
 
-    final head = _Geometry.sphere(0.2 * w, 0.11 * h, 0.25 * d, 20);
-    head.shift(0, y(0.89), 0);
+    _Mesh column(
+      double rx,
+      double height,
+      double rz,
+      double cx,
+      double cy,
+      double cz,
+    ) {
+      final mesh = _Geometry.cylinder(rx, height, rz, 14);
+      mesh.shift(cx, cy, cz);
+      return mesh;
+    }
 
     return <_Part>[
-      _Part(boxAt(0.3 * w, 0.38 * h, 0.5 * d, -0.2 * w, y(0.19)), legs),
-      _Part(boxAt(0.3 * w, 0.38 * h, 0.5 * d, 0.2 * w, y(0.19)), legs),
-      _Part(boxAt(0.8 * w, 0.4 * h, 0.7 * d, 0, y(0.58)), body),
-      _Part(boxAt(0.2 * w, 0.34 * h, 0.3 * d, -0.45 * w, y(0.6)), body),
-      _Part(boxAt(0.2 * w, 0.34 * h, 0.3 * d, 0.45 * w, y(0.6)), body),
-      _Part(head, _skin),
+      // Shoes: flat ellipsoids, longer toward the front.
+      _Part(ellipsoid(0.15 * w, 0.035 * h, 0.30 * d, -0.2 * w, y(0.035), 0.1 * d), _shoe),
+      _Part(ellipsoid(0.15 * w, 0.035 * h, 0.30 * d, 0.2 * w, y(0.035), 0.1 * d), _shoe),
+      // Legs.
+      _Part(column(0.125 * w, 0.34 * h, 0.22 * d, -0.2 * w, y(0.21), 0), legs),
+      _Part(column(0.125 * w, 0.34 * h, 0.22 * d, 0.2 * w, y(0.21), 0), legs),
+      // Belt, waist and chest.
+      _Part(column(0.35 * w, 0.04 * h, 0.29 * d, 0, y(0.405), 0), belt),
+      _Part(column(0.34 * w, 0.16 * h, 0.28 * d, 0, y(0.49), 0), body),
+      _Part(ellipsoid(0.40 * w, 0.17 * h, 0.32 * d, 0, y(0.62), 0), body),
+      // Shoulders and sleeves.
+      _Part(ellipsoid(0.11 * w, 0.075 * h, 0.15 * d, -0.41 * w, y(0.70), 0), body),
+      _Part(ellipsoid(0.11 * w, 0.075 * h, 0.15 * d, 0.41 * w, y(0.70), 0), body),
+      _Part(column(0.075 * w, 0.27 * h, 0.12 * d, -0.46 * w, y(0.55), 0), body),
+      _Part(column(0.075 * w, 0.27 * h, 0.12 * d, 0.46 * w, y(0.55), 0), body),
+      // Hands.
+      _Part(ellipsoid(0.07 * w, 0.045 * h, 0.09 * d, -0.46 * w, y(0.39), 0), _skin),
+      _Part(ellipsoid(0.07 * w, 0.045 * h, 0.09 * d, 0.46 * w, y(0.39), 0), _skin),
+      // Neck and head.
+      _Part(column(0.07 * w, 0.06 * h, 0.08 * d, 0, y(0.80), 0), _skin),
+      _Part(ellipsoid(0.2 * w, 0.11 * h, 0.25 * d, 0, y(0.89), 0), _skin),
+      // Hair: a slightly bigger cap, raised and set back so the face stays
+      // free and the hairline sits on the forehead.
+      _Part(ellipsoid(0.215 * w, 0.095 * h, 0.265 * d, 0, y(0.905), -0.02 * d), _hair),
+      // Face: eyes, nose and mouth sit on the front of the head.
+      _Part(ellipsoid(0.03 * w, 0.018 * h, 0.02 * d, -0.075 * w, y(0.895), 0.235 * d), _eye),
+      _Part(ellipsoid(0.03 * w, 0.018 * h, 0.02 * d, 0.075 * w, y(0.895), 0.235 * d), _eye),
+      _Part(ellipsoid(0.025 * w, 0.02 * h, 0.03 * d, 0, y(0.875), 0.25 * d), noseColor),
+      _Part(ellipsoid(0.04 * w, 0.008 * h, 0.015 * d, 0, y(0.845), 0.238 * d), _mouth),
     ];
   }
 
