@@ -19,6 +19,7 @@ import 'keyword_callout_planner.dart';
 import 'motion_cutaway_renderer.dart';
 import 'motion_graphics.dart';
 import 'reference_scene_builder.dart';
+import 'scene_frame_guard.dart';
 import 'timeline_engine.dart';
 import 'sound_effect_generator.dart';
 import 'silence_cutter.dart';
@@ -112,6 +113,10 @@ class Enhancer {
     return ReturnCode.isSuccess(await session.getReturnCode());
   }
 
+  /// Scores a cover frame, or returns null when the picture cannot be a cover:
+  /// unreadable, mostly transparent, black, or one flat colour (an empty
+  /// picture). Used both to pick the best frame and to check the finished
+  /// cover, so a transparent or empty cover is never kept.
   static Future<_CoverFrameMetrics?> _inspectCoverFrame(String path) async {
     ui.Codec? codec;
     ui.Image? image;
@@ -141,6 +146,7 @@ class Enhancer {
       var sumSq = 0.0;
       var edgeSum = 0.0;
       var count = 0;
+      var transparent = 0;
       final zoneEdge = List<double>.filled(3, 0);
       final zoneCount = List<int>.filled(3, 0);
 
@@ -151,6 +157,7 @@ class Enhancer {
           final right = lumaAt(x + stepX, y);
           final below = lumaAt(x, y + stepY);
           final edge = ((current - right).abs() + (current - below).abs()) / 2;
+          if (pixels.getUint8((y * width + x) * 4 + 3) < 16) transparent++;
           sum += current;
           sumSq += current * current;
           edgeSum += edge;
@@ -163,6 +170,12 @@ class Enhancer {
       if (count == 0) return null;
       final mean = sum / count;
       final variance = math.max(0.0, (sumSq / count) - (mean * mean));
+
+      // A transparent, black or one-colour picture is no cover.
+      if (transparent / count >= 0.5) return null;
+      if (mean <= SceneFrameGuard.blackLuma) return null;
+      if (math.sqrt(variance) < SceneFrameGuard.flatDeviation) return null;
+
       final contrast = (math.sqrt(variance) / 68.0).clamp(0.0, 1.0).toDouble();
       final exposure = (1.0 - (mean - 128.0).abs() / 128.0).clamp(0.0, 1.0).toDouble();
       final detail = ((edgeSum / count) / 34.0).clamp(0.0, 1.0).toDouble();
@@ -251,6 +264,9 @@ class Enhancer {
       final recorder = ui.PictureRecorder();
       final canvas = ui.Canvas(recorder);
       final bounds = ui.Rect.fromLTWH(0, 0, width, height);
+      // The cover is always opaque: a solid base under the picture, so no
+      // pixel can ever come out transparent.
+      canvas.drawRect(bounds, ui.Paint()..color = const ui.Color(0xFF000000));
       canvas.drawImageRect(
         source,
         ui.Rect.fromLTWH(0, 0, width, height),
@@ -367,6 +383,43 @@ class Enhancer {
       source?.dispose();
       codec?.dispose();
     }
+  }
+
+  /// A plain cover: one frame of the video that is not empty. Several moments
+  /// are tried; a black, transparent or flat frame is dropped. Null when no
+  /// moment of the video gives a real picture (no cover is better than an
+  /// empty one).
+  static Future<String?> _createFallbackCover({
+    required String videoPath,
+    required String dir,
+    required int stamp,
+    required double duration,
+    required int outW,
+    required int outH,
+  }) async {
+    final maxSeek = math.max(0.0, duration - 0.04);
+    final times = <double>[
+      duration > 2 ? 1.0 : 0.0,
+      duration * 0.25,
+      duration * 0.50,
+      duration * 0.75,
+      duration * 0.90,
+    ].map((time) => time.clamp(0.0, maxSeek).toDouble()).toSet().toList();
+
+    for (var i = 0; i < times.length; i++) {
+      final path = '$dir/cover_fallback_${stamp}_$i.jpg';
+      final ok = await _run(
+        '-y -ss ${_f(times[i])} -i "$videoPath" '
+        '-vf "scale=$outW:$outH:flags=lanczos,format=yuv420p" '
+        '-frames:v 1 -q:v 2 "$path"',
+      );
+      if (!ok || !File(path).existsSync()) continue;
+      if (await _inspectCoverFrame(path) != null) return path;
+      try {
+        await File(path).delete();
+      } catch (_) {}
+    }
+    return null;
   }
 
   static String _styleFilter(String style) => VisualFilterEngine.filterSuffix(style);
@@ -1326,7 +1379,7 @@ class Enhancer {
     try {
       onStatus?.call('جاري اختيار أفضل لقطة وتصميم الغلاف الذكي...');
       final cover = '$dir/cover_$stamp.png';
-      final smartCover = await _createSmartCover(
+      var smartCover = await _createSmartCover(
         videoPath: cutPath,
         outputPath: cover,
         dir: dir,
@@ -1336,16 +1389,36 @@ class Enhancer {
         fontFamily: captionFont,
         temps: temps,
       );
+
+      // A transparent or empty cover is never kept: it is checked once more
+      // after it is drawn.
+      if (smartCover != null && await _inspectCoverFrame(smartCover) == null) {
+        notes.add('خرج الغلاف الذكي شفافاً أو فارغاً؛ تم استبداله بلقطة سليمة.');
+        try {
+          await File(smartCover).delete();
+        } catch (_) {}
+        smartCover = null;
+      }
+
       if (smartCover != null) {
         coverPath = smartCover;
         notes.add('تم اختيار لقطة الغلاف تلقائياً ووضع العنوان في المساحة الأقل ازدحاماً.');
       } else {
         onStatus?.call('تعذر تحليل لقطات الغلاف؛ جاري إنشاء غلاف احتياطي...');
-        final at = cutSec > 2 ? 1.0 : 0.0;
-        final fallback = '$dir/cover_fallback_$stamp.jpg';
-        final fallbackOk = await _run('-y -ss ${_f(at)} -i "$cutPath" -vf "scale=$outW:$outH:flags=lanczos" -frames:v 1 -q:v 2 "$fallback"');
-        if (fallbackOk && File(fallback).existsSync()) coverPath = fallback;
-        notes.add('تم استخدام غلاف احتياطي بدلاً من التصميم الذكي.');
+        final fallback = await _createFallbackCover(
+          videoPath: cutPath,
+          dir: dir,
+          stamp: stamp,
+          duration: cutSec,
+          outW: outW,
+          outH: outH,
+        );
+        if (fallback != null) {
+          coverPath = fallback;
+          notes.add('تم استخدام غلاف احتياطي بدلاً من التصميم الذكي.');
+        } else {
+          notes.add('لم أجد لقطة سليمة للغلاف (كل اللقطات سوداء أو فارغة)؛ لم يُنشأ غلاف بدل غلاف فارغ.');
+        }
       }
     } catch (e) {
       notes.add('تعذر تجهيز الغلاف الذكي: $e');
