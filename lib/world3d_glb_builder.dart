@@ -5,13 +5,16 @@
 /// props) is rendered by the plugin that already exists, with no native change.
 ///
 ///  * box, sphere and cylinder set pieces become real meshes with normals;
+///    the known ones (desk, window, bookshelf, lamps, buildings...) are built
+///    from several detailed parts that stay inside the box of the piece (see
+///    world3d_set_pieces.dart);
 ///  * the character is assembled from rounded parts (shoes, legs, belt, torso,
 ///    shoulders, arms, hands, neck, head, hair and a face with eyes, nose and
 ///    mouth), each with its own material;
 ///  * a prop (billboard) becomes a textured quad when the caller supplies its
 ///    picture (PNG bytes, keyed by the asset key of the layer); without a
 ///    picture it is skipped and listed in [World3DGlb.skipped];
-///  * windows, the sun and light panels glow (emissive);
+///  * windows, the sun, light panels, lamps and lit windows glow (emissive);
 ///  * materials with the same colour are shared;
 ///  * object positions are baked into the vertices, so the bounds the native
 ///    loader computes (and rescales to a unit cube) never depend on node
@@ -36,6 +39,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'world3d_model.dart';
 import 'world3d_planner.dart' show World3DScene;
 import 'world3d_rig.dart';
+import 'world3d_set_pieces.dart';
 
 /// A finished GLB and what went into it.
 class World3DGlb {
@@ -611,6 +615,8 @@ class World3DGlbBuilder {
       case World3DShape.box:
       case World3DShape.sphere:
       case World3DShape.cylinder:
+        final detailed = _setPieceParts(o);
+        if (detailed != null) return detailed;
         return <_Part>[
           _Part(
             _meshFor(o.shape, o.size, seg),
@@ -619,6 +625,37 @@ class World3DGlbBuilder {
           ),
         ];
     }
+  }
+
+  /// The detailed parts of a known set piece (see world3d_set_pieces.dart), or
+  /// null when the object is not one, is a sphere (hills, sun) or has no
+  /// detailed version: it then stays one primitive.
+  static List<_Part>? _setPieceParts(World3DObject o) {
+    final key = o.assetKey;
+    if (key == null || !key.startsWith('decor:')) return null;
+    if (o.shape == World3DShape.sphere) return null;
+
+    final parts = World3DSetPieces.partsFor(
+      key.substring('decor:'.length),
+      o.size.x,
+      o.size.y,
+      o.size.z,
+      o.color,
+    );
+    if (parts == null) return null;
+
+    return <_Part>[
+      for (final part in parts)
+        _Part(_meshOfSetPiecePart(part), part.color, glow: part.glow),
+    ];
+  }
+
+  static _Mesh _meshOfSetPiecePart(SetPiecePart part) {
+    final mesh = part.shape == SetPieceShape.cylinder
+        ? _Geometry.cylinder(part.sx / 2, part.sy, part.sz / 2, 14)
+        : _Geometry.box(part.sx, part.sy, part.sz);
+    mesh.shift(part.cx, part.cy, part.cz);
+    return mesh;
   }
 
   static _Mesh _meshFor(World3DShape shape, Vec3 size, int seg) {
