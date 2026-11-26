@@ -210,6 +210,21 @@ void main() {
       expect(GlbInspector.inspect(glb.bytes).isSafe, isTrue);
     });
 
+    test('the desk and the window of the scene are detailed, not one box', () {
+      final glb = World3DGlbBuilder.build(World3DPlanner.plan(_scene()));
+      final json = _json(glb.bytes);
+      final nodes = json['nodes'] as List;
+      final meshes = json['meshes'] as List;
+
+      int primitivesOf(String name) {
+        final node = nodes.firstWhere((n) => n['name'] == name);
+        return (meshes[node['mesh']]['primitives'] as List).length;
+      }
+
+      expect(primitivesOf('w0_set0'), greaterThan(1));
+      expect(primitivesOf('w0_set1'), greaterThan(1));
+    });
+
     test('the position is baked into the vertices, not into the node', () {
       final glb = World3DGlbBuilder.buildObjects(<World3DObject>[_redBox]);
       final json = _json(glb.bytes);
@@ -254,7 +269,7 @@ void main() {
       expect(factor[3], 1.0);
     });
 
-    test('windows glow', () {
+    test('the glass of a window glows, its frame does not', () {
       const window = World3DObject(
         id: 'win',
         role: World3DRole.setPiece,
@@ -265,6 +280,26 @@ void main() {
         color: '#8EC5E8',
       );
       final glb = World3DGlbBuilder.buildObjects(<World3DObject>[window]);
+      final materials = _json(glb.bytes)['materials'] as List;
+      final glowing =
+          materials.where((m) => (m as Map).containsKey('emissiveFactor'));
+      expect(glowing, hasLength(1));
+      expect(glowing.single['emissiveFactor'], hasLength(3));
+      expect(materials.length, greaterThan(1));
+    });
+
+    test('a window-keyed object that is not a known piece shape still glows', () {
+      // The sun is a sphere: it stays one primitive and glows as a whole.
+      const sun = World3DObject(
+        id: 'sun',
+        role: World3DRole.setPiece,
+        shape: World3DShape.sphere,
+        assetKey: 'decor:sun',
+        position: Vec3(0, 3, -6),
+        size: Vec3(1, 1, 1),
+        color: '#F5A524',
+      );
+      final glb = World3DGlbBuilder.buildObjects(<World3DObject>[sun]);
       final material = (_json(glb.bytes)['materials'] as List).single;
       expect(material['emissiveFactor'], hasLength(3));
     });
