@@ -17,7 +17,9 @@
 library;
 
 import 'depth_camera_model.dart' show DepthCameraMove;
+import 'domain_story_pack.dart';
 import 'motion_transitions.dart' show MotionTransitionKind;
+import 'transition_director.dart';
 
 /// The place a segment happens in.
 enum StoryEnvironment { office, room, library, street, studio, outdoors }
@@ -95,6 +97,38 @@ class StoryBeat {
   /// True when the next beat is entered by diving into the window / screen.
   final bool windowToNext;
 
+  /// Id of the domain pack that routed this beat, or `everyday_explainer`.
+  final String domainId;
+
+  /// What the speaker is doing with the idea: explaining a place, comparing
+  /// two places, telling a story, warning, using a metaphor. Defaults to
+  /// [StoryIntent.explain] so existing callers keep working.
+  final StoryIntent intent;
+
+  /// One short sentence (Arabic) that says what the viewer should see. Used
+  /// by the diagnostics report and by the Live Assembly Board.
+  final String visualExplanation;
+
+  /// 0..1 confidence of the domain routing. Low confidence means the beat
+  /// keeps the everyday lexicon.
+  final double confidence;
+
+  /// Relations between this beat and the previous one (comparison, cause,
+  /// example, metaphor). Empty when there is no relation.
+  final List<StoryRelation> relations;
+
+  /// Zones of this beat (one or more connected places). Empty means the
+  /// environment of the beat is a single zone.
+  final List<StoryZone> zones;
+
+  /// Shot plan of this beat (one or more shots). Empty means the beat is a
+  /// single shot.
+  final List<StoryShot> shotPlan;
+
+  /// Transition plan into the next beat. Null means the beat uses
+  /// [transitionToNext] as before.
+  final StoryTransitionPlan? transitionPlan;
+
   const StoryBeat({
     required this.index,
     required this.segment,
@@ -107,6 +141,122 @@ class StoryBeat {
     required this.cameraHint,
     required this.transitionToNext,
     required this.windowToNext,
+    this.domainId = 'everyday_explainer',
+    this.intent = StoryIntent.explain,
+    this.visualExplanation = '',
+    this.confidence = 0,
+    this.relations = const <StoryRelation>[],
+    this.zones = const <StoryZone>[],
+    this.shotPlan = const <StoryShot>[],
+    this.transitionPlan,
+  });
+}
+
+/// What the speaker is doing with the idea of a beat.
+enum StoryIntent {
+  /// Explaining a place, an object or a concept.
+  explain,
+
+  /// Comparing two places or two ideas.
+  compare,
+
+  /// Telling a story (a sequence of events).
+  story,
+
+  /// Warning about a risk.
+  warn,
+
+  /// Using a metaphor (the words are not literal).
+  metaphor,
+}
+
+/// A relation between two beats.
+enum StoryRelation {
+  /// The beat compares two things.
+  comparison,
+
+  /// The beat is a cause of the next one.
+  cause,
+
+  /// The beat is an example of the previous one.
+  example,
+
+  /// The beat is a metaphor of the previous one.
+  metaphor,
+}
+
+/// One connected place of a beat.
+class StoryZone {
+  /// Stable id inside the beat (`bathroom`, `hallway`, `bedroom`).
+  final String id;
+
+  /// Environment of the zone.
+  final StoryEnvironment environment;
+
+  /// Objects that belong to the zone (asset-style keys).
+  final List<String> props;
+
+  /// Ids of the zones this one connects to (portals).
+  final List<String> portals;
+
+  const StoryZone({
+    required this.id,
+    required this.environment,
+    required this.props,
+    this.portals = const <String>[],
+  });
+}
+
+/// One shot of a beat.
+class StoryShot {
+  /// Stable id inside the beat (`wide`, `crane`, `push_in`).
+  final String id;
+
+  /// Kind of shot.
+  final StoryShotKind kind;
+
+  /// Camera move of the shot.
+  final DepthCameraMove camera;
+
+  /// Start and end of the shot inside the beat, in seconds from the beat
+  /// start. The last shot ends at the beat duration.
+  final double start;
+  final double end;
+
+  const StoryShot({
+    required this.id,
+    required this.kind,
+    required this.camera,
+    required this.start,
+    required this.end,
+  });
+
+  double get duration => end - start;
+}
+
+/// The plan of the transition into the next beat.
+class StoryTransitionPlan {
+  /// Transition kind (the renderer already knows how to draw it).
+  final MotionTransitionKind kind;
+
+  /// Duration in seconds.
+  final double duration;
+
+  /// Why this transition was chosen (Arabic, for diagnostics).
+  final String reason;
+
+  /// 0..1 score of the chosen transition.
+  final double score;
+
+  /// Fallback kind when the chosen one cannot be rendered.
+  final MotionTransitionKind fallback;
+
+  const StoryTransitionPlan({
+    required this.kind,
+    required this.duration,
+    required this.reason,
+    required this.score,
+    required this.fallback,
   });
 }
 
@@ -419,11 +569,50 @@ class StoryUnderstanding {
     return result;
   }
 
+  /// Routes [text] to a domain pack. Returns the pack and a 0..1 confidence.
+  /// The everyday pack is returned when no domain word is found.
+  static ({DomainStoryPack pack, double confidence}) route(String text) {
+    final normalized = normalize(text);
+    final words = normalized.split(_splitter).where((w) => w.isNotEmpty).toSet();
+    if (words.isEmpty) {
+      return (pack: DomainStoryPacks.byId('everyday_explainer')!, confidence: 0);
+    }
+
+    DomainStoryPack? best;
+    var bestScore = 0;
+    for (final pack in DomainStoryPacks.all) {
+      if (pack.id == 'everyday_explainer') continue;
+      var score = 0;
+      for (final trigger in pack.triggers) {
+        final key = normalize(trigger);
+        if (key.isEmpty) continue;
+        if (words.contains(key)) {
+          score += 2;
+        } else if (key.length >= 4 && normalized.contains(key)) {
+          score += 1;
+        }
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = pack;
+      }
+    }
+
+    if (best == null) {
+      return (pack: DomainStoryPacks.byId('everyday_explainer')!, confidence: 0);
+    }
+    final confidence = (bestScore / 6).clamp(0.0, 1.0).toDouble();
+    return (pack: best, confidence: confidence);
+  }
+
   /// Plans the story of [segments] (in time order).
   static StoryPlan plan(List<StorySegment> segments) {
     final count = segments.length;
     final analyses = <_Analysis>[
       for (final segment in segments) _analyze(segment.text),
+    ];
+    final routes = <({DomainStoryPack pack, double confidence})>[
+      for (final segment in segments) route(segment.text),
     ];
 
     // Pass 1: environment and mood of every beat. A segment without a known
@@ -495,6 +684,33 @@ class StoryUnderstanding {
       }
 
       final top = analysis.top;
+      final route = routes[i];
+      final domainId = route.confidence >= 0.34 ? route.pack.id : 'everyday_explainer';
+      final intent = _intentOf(segment.text, analysis);
+      final relations = _relationsOf(segment.text, analysis);
+      final zones = _zonesOf(environments[i], top, analysis.second);
+      final shotPlan = _shotPlanOf(segment.duration, shot, hint);
+      final transitionPlan = i + 1 < count
+          ? TransitionDirector.plan(
+              from: beats.isEmpty ? _placeholderBeat(i, segment) : beats.last,
+              to: _placeholderBeat(i + 1, segments[i + 1]),
+              fromDuration: segment.duration,
+              toDuration: segments[i + 1].duration,
+              fromEnvironment: environments[i],
+              toEnvironment: environments[i + 1],
+              window: windows[i],
+              fromShot: shot,
+              toShot: StoryShotKind.medium,
+              fromCamera: hint,
+              toCamera: DepthCameraMove.none,
+              fromZones: zones,
+              toZones: const <StoryZone>[],
+              fromIntent: intent,
+              toIntent: StoryIntent.explain,
+              fromRelations: relations,
+            )
+          : null;
+
       beats.add(
         StoryBeat(
           index: i,
@@ -510,9 +726,139 @@ class StoryUnderstanding {
           cameraHint: hint,
           transitionToNext: transition,
           windowToNext: windows[i],
+          domainId: domainId,
+          intent: intent,
+          visualExplanation: _explain(environments[i], top, intent),
+          confidence: route.confidence,
+          relations: relations,
+          zones: zones,
+          shotPlan: shotPlan,
+          transitionPlan: transitionPlan,
         ),
       );
     }
     return StoryPlan(beats);
+  }
+
+  static StoryIntent _intentOf(String text, _Analysis analysis) {
+    final normalized = normalize(text);
+    if (normalized.contains('مثل') || normalized.contains('كأن') ||
+        normalized.contains('كأنه') || normalized.contains('like ')) {
+      return StoryIntent.metaphor;
+    }
+    if (normalized.contains('مقارنة') || normalized.contains('مقارنه') ||
+        normalized.contains('أفضل') || normalized.contains('افضل') ||
+        normalized.contains('compare') || normalized.contains('better')) {
+      return StoryIntent.compare;
+    }
+    if (normalized.contains('خطر') || normalized.contains('تحذير') ||
+        normalized.contains('احذر') || normalized.contains('warning') ||
+        normalized.contains('danger')) {
+      return StoryIntent.warn;
+    }
+    if (normalized.contains('قصة') || normalized.contains('قصه') ||
+        normalized.contains('حكاية') || normalized.contains('حكايه') ||
+        normalized.contains('story') || normalized.contains('once')) {
+      return StoryIntent.story;
+    }
+    return StoryIntent.explain;
+  }
+
+  static List<StoryRelation> _relationsOf(String text, _Analysis analysis) {
+    final normalized = normalize(text);
+    final relations = <StoryRelation>[];
+    if (normalized.contains('لأن') || normalized.contains('لانه') ||
+        normalized.contains('بسبب') || normalized.contains('because')) {
+      relations.add(StoryRelation.cause);
+    }
+    if (normalized.contains('مثال') || normalized.contains('مثلا') ||
+        normalized.contains('example')) {
+      relations.add(StoryRelation.example);
+    }
+    if (normalized.contains('مثل') || normalized.contains('كأن') ||
+        normalized.contains('like ')) {
+      relations.add(StoryRelation.metaphor);
+    }
+    if (normalized.contains('مقارنة') || normalized.contains('مقارنه') ||
+        normalized.contains('compare')) {
+      relations.add(StoryRelation.comparison);
+    }
+    return relations;
+  }
+
+  static List<StoryZone> _zonesOf(
+    StoryEnvironment environment,
+    StoryConcept? top,
+    StoryConcept? second,
+  ) {
+    final props = top == null
+        ? const <String>[]
+        : _propsOf(top, second);
+    return <StoryZone>[
+      StoryZone(
+        id: environment.name,
+        environment: environment,
+        props: props,
+      ),
+    ];
+  }
+
+  static List<StoryShot> _shotPlanOf(
+    double duration,
+    StoryShotKind kind,
+    DepthCameraMove camera,
+  ) {
+    if (!duration.isFinite || duration <= 0) return const <StoryShot>[];
+    return <StoryShot>[
+      StoryShot(
+        id: 'main',
+        kind: kind,
+        camera: camera,
+        start: 0,
+        end: duration,
+      ),
+    ];
+  }
+
+  /// A minimal beat used only to ask the director for a transition before the
+  /// real beat is built. It carries the fields the director reads.
+  static StoryBeat _placeholderBeat(int index, StorySegment segment) {
+    return StoryBeat(
+      index: index,
+      segment: segment,
+      focus: 'none',
+      environment: StoryEnvironment.room,
+      mood: StoryMood.calm,
+      props: const <String>[],
+      effectWord: '',
+      shot: StoryShotKind.medium,
+      cameraHint: DepthCameraMove.none,
+      transitionToNext: MotionTransitionKind.hardCut,
+      windowToNext: false,
+    );
+  }
+
+  static String _explain(
+    StoryEnvironment environment,
+    StoryConcept? top,
+    StoryIntent intent,
+  ) {
+    final place = switch (environment) {
+      StoryEnvironment.office => 'مكتب',
+      StoryEnvironment.room => 'غرفة',
+      StoryEnvironment.library => 'مكتبة',
+      StoryEnvironment.street => 'شارع',
+      StoryEnvironment.studio => 'استوديو',
+      StoryEnvironment.outdoors => 'خارج',
+    };
+    final idea = top?.id ?? 'فكرة عامة';
+    final verb = switch (intent) {
+      StoryIntent.explain => 'شرح',
+      StoryIntent.compare => 'مقارنة',
+      StoryIntent.story => 'قصة',
+      StoryIntent.warn => 'تحذير',
+      StoryIntent.metaphor => 'استعارة',
+    };
+    return '$verb $idea في $place';
   }
 }
