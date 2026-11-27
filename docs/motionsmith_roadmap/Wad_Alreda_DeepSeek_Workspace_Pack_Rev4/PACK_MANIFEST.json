@@ -1,0 +1,40 @@
+{
+  "pack": "Wad Alreda DeepSeek Workspace Pack",
+  "revision": 4,
+  "repository": "mmr888336/Wad-Alreda-Auto-Edit-",
+  "historical_baseline_build": 361,
+  "historical_baseline_sha": "71795b9fe09982d94045724aa1fee4f27e5e7fc5",
+  "files": [
+    "DEEPSEEK_START_PROMPT.txt",
+    "DOMAIN_STORY_PACKS_SPEC.md",
+    "EXECUTION_LOG_TEMPLATE.md",
+    "POST_EXPORT_EDITOR_SPEC.md",
+    "README_FIRST.txt",
+    "REV4_REUSE_SPEED_AND_REWARDED_ADS_SPEC.md",
+    "TRANSITION_DIRECTOR_SPEC.md",
+    "WAD_ALREDA_MOTION_SMITH_110_ROADMAP.md",
+    "WAD_ALREDA_MOTION_SMITH_ROADMAP.md",
+    "references/01_motion_smith_reference_contact_sheet.jpg",
+    "references/02_current_wad_alreda_output_contact_sheet.jpg",
+    "references/03_veo3_six_shot_storyboard.jpg",
+    "references/04_bathroom_real_asset_kit.jpg",
+    "references/05_photoreal_bathroom_environment.jpg",
+    "references/06_live_presenter_green_screen_to_library.jpg",
+    "references/07_professional_editing_workflow_reference.jpg",
+    "references/08_blank_black_cover_reference.png",
+    "references/README_REFERENCES.md"
+  ],
+  "non_negotiable": [
+    "REUSE/EXTEND/REFACTOR before NEW; document proof before adding any parallel class/service/widget/model",
+    "Keep viewer pacing lively and preserve speech synchronization",
+    "Measure UI/timeline/export latency against a same-device baseline",
+    "save_to_phone and open_timeline use independent on-device mock rewarded flows in experiment mode",
+    "No ad SDK/network/impressions/clicks/revenue in mock mode; production rejects mock mode",
+    "Do not commit/push without explicit permission"
+  ],
+  "notes": [
+    "Build 361 is historical; inspect actual HEAD before work.",
+    "110 means 100 visual core + 10 verified product capabilities, not guaranteed visual superiority.",
+    "Original MP4 videos are not bundled; include them separately in DeepSeek Workspace for full motion/audio analysis."
+  ]
+}

@@ -1,0 +1,26 @@
+اقرأ هذه الملفات بالترتيب قبل لمس الكود:
+1. `WAD_ALREDA_MOTION_SMITH_110_ROADMAP.md` كاملاً.
+2. `REV4_REUSE_SPEED_AND_REWARDED_ADS_SPEC.md` كاملاً.
+3. `TRANSITION_DIRECTOR_SPEC.md`.
+4. `DOMAIN_STORY_PACKS_SPEC.md`.
+5. `POST_EXPORT_EDITOR_SPEC.md`.
+6. `references/` بالكامل.
+
+المستودع: `mmr888336/Wad-Alreda-Auto-Edit-`
+Build 361 / SHA `71795b9fe09982d94045724aa1fee4f27e5e7fc5` مرجع تاريخي فقط. افحص أحدث HEAD والملفات الحالية قبل أي تغيير.
+
+**الشرط الأول قبل البرمجة:** نفّذ Phase 0 وأكمل مصفوفة `REUSE / EXTEND / REFACTOR / NEW` لكل نظام. افحص `main.dart`, `settings.dart`, `AdPage`، TimelineProject/ProjectStore، Asset/3D services، Compositors، Gallery save، وFFmpeg pipeline. لا تنشئ class/file/service/widget/manager مكرراً إذا كان الموجود قابلاً للتعديل. أي ملف جديد يجب أن تبرر غياب البديل الحالي وكيف يدخل مسار الإنتاج.
+
+بعد Phase 0، نفّذ Phase 1 ثم 2 ثم 3 ثم 4. لا تتوقف عند الشرح أو TODOs؛ نفّذ الكود الفعلي واختبره ثم انتقل للمراحل التالية بعد نجاح شروط القبول.
+
+المتطلبات الإضافية الإلزامية:
+- حافظ على سرعة وإيقاع الفيديو: لا static holds بلا سبب، ولا تأخير للصورة عن الجملة، ولا إعادة encode كاملة مع كل حركة Timeline. استخدم cache/proxies/dirty-shot rendering، وقِس زمن export وP50/P95 على نفس الجهاز/العينة قبل وبعد.
+- لا تضغط الجهاز: تحميل أصول 1–2 بالتوازي افتراضياً، Filament render تسلسلي على الهاتف، خفض المؤثرات الاختيارية قبل دقة/FPS، واحترام thermal/low-memory.
+- موضع `save_to_phone`: Rewarded mock محلي مستقل قبل الحفظ إلى المعرض. موضع `open_timeline`: Rewarded mock محلي مستقل قبل فتح Timeline. لا يفتح أي إجراء إلا بعد `completed`.
+- كل مواضع الإعلانات في التطبيق في وضع التجربة (القديمة والجديدة، بما فيها AdPage السابقة إن وجدت) محاكاة محلية ظاهرة بوضوح؛ لا تهيئة Ad SDK في أي مكان، لا شبكة، لا impressions/clicks/revenue مزيفة، ولا روابط إعلانية. حافظ على مواضعها في رحلة المستخدم لكن بدّل provider إلى mock. احمِ Production من Mock Mode.
+- لا تنشئ Timeline/ProjectStore/AdPage/AssetService/StoryEngine موازياً. مدّد الموجود. حافظ على كل الميزات الحالية.
+- كل user action يحصل على validation خفيف فقط. Full Render QA بعد اكتمال export أو دفعة تحرير، وليس على كل drag/scrub.
+- اختبر `main.dart` و`settings.dart` والـwidgets والـnative والـtimeline، ثم الفيديو النهائي والغلاف مع Contact Sheets. سجّل evidence في `EXECUTION_LOG.md` وميّز implemented/integrated/tested/device_verified/visually_approved.
+- لا تضع API keys في الكود أو logs. لا تنفذ commit/push/merge ولا تغيّر GitHub Actions دون الإذن اللازم. لا تحذف الميزات لتجاوز فشل اختبار.
+
+ابدأ الآن بـPhase 0. لا تكرر سؤالاً أجاب عنه المستودع؛ اقرأه. إذا فشل اختبار، أصلح السبب في كود الإنتاج ولا تخفف test فقط.
