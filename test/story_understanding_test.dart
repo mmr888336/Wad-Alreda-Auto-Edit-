@@ -90,4 +90,73 @@ void main() {
       expect(plan.beats[0].transitionToNext, MotionTransitionKind.matchCut);
     });
   });
+
+  group('multi-zone', () {
+    test('a comparison of two places gives two connected zones', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('مقارنة بين الفلوس والعلم', 0, 3),
+      ]);
+      final beat = plan.beats.single;
+      expect(beat.intent, StoryIntent.compare);
+      expect(beat.zones.length, 2);
+      expect(beat.zones[0].environment, StoryEnvironment.office);
+      expect(beat.zones[1].environment, StoryEnvironment.library);
+      expect(beat.zones[0].portals, contains(beat.zones[1].id));
+      expect(beat.zones[1].portals, contains(beat.zones[0].id));
+    });
+
+    test('a plain sentence keeps one zone', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('الفلوس مهمة', 0, 3),
+      ]);
+      expect(plan.beats.single.zones.length, 1);
+      expect(plan.beats.single.zones.single.portals, isEmpty);
+    });
+
+    test('a continuation keeps a portal to the previous zone', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('مقارنة بين الفلوس والعلم', 0, 3),
+        _seg('وبعدين نكمل الكلام', 3, 6),
+      ]);
+      final second = plan.beats[1];
+      expect(second.zones.length, 2);
+      expect(second.zones[0].portals, isNotEmpty);
+      expect(second.zones[1].portals, isNotEmpty);
+    });
+  });
+
+  group('multi-shot', () {
+    test('a short beat is one shot covering the whole beat', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('الفلوس مهمة', 0, 2),
+      ]);
+      final shots = plan.beats.single.shotPlan;
+      expect(shots.length, 1);
+      expect(shots.single.start, 0);
+      expect(shots.single.end, 2);
+    });
+
+    test('a long beat is establishing -> medium -> closeUp', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('الفلوس مهمة جدا في حياتنا', 0, 4),
+      ]);
+      final shots = plan.beats.single.shotPlan;
+      expect(shots.length, 3);
+      expect(shots[0].kind, StoryShotKind.establishing);
+      expect(shots[1].kind, StoryShotKind.medium);
+      expect(shots[2].kind, StoryShotKind.closeUp);
+    });
+
+    test('the shots are contiguous and cover the whole beat', () {
+      final plan = StoryUnderstanding.plan(<StorySegment>[
+        _seg('الفلوس مهمة جدا في حياتنا', 0, 4),
+      ]);
+      final shots = plan.beats.single.shotPlan;
+      expect(shots.first.start, 0);
+      expect(shots.last.end, 4);
+      for (var i = 0; i < shots.length - 1; i++) {
+        expect(shots[i].end, closeTo(shots[i + 1].start, 1e-9));
+      }
+    });
+  });
 }
