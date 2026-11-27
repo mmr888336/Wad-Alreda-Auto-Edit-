@@ -14,7 +14,7 @@
 ///
 /// The camera move is only a HINT: the existing CinematicCameraDirector keeps
 /// the final say on the shot list. Pure Dart, no I/O.
-library;
+library story_understanding;
 
 import 'depth_camera_model.dart' show DepthCameraMove;
 import 'domain_story_pack.dart';
