@@ -17,7 +17,7 @@
 /// [WorldSetPieces]; its asset is a `visual` asset with the id `set:<name>`.
 ///
 /// Pure Dart, no I/O.
-library;
+library story_world_bridge;
 
 import 'cinematic_world.dart';
 import 'motion_scene_model.dart';
