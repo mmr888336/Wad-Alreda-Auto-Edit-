@@ -585,7 +585,9 @@ class _HomePageState extends State<HomePage> {
       JobControl.reset();
 
       final adCompleted = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(builder: (_) => const AdPage()),
+        MaterialPageRoute(
+          builder: (_) => const AdPage(placement: AdPlacement.preExport),
+        ),
       );
 
       if (!mounted) return;
@@ -651,6 +653,15 @@ class _HomePageState extends State<HomePage> {
   Future<void> _saveToGallery() async {
     final current = result;
     if (current == null || saving) return;
+
+    // Local mock reward: the gallery write only happens after the user
+    // explicitly completes the test card. Cancel/failure grants nothing.
+    final reward = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => const AdPage(placement: AdPlacement.saveToPhone),
+      ),
+    );
+    if (!mounted || reward != true) return;
 
     setState(() {
       saving = true;
@@ -1087,14 +1098,26 @@ class _HomePageState extends State<HomePage> {
             ],
             const SizedBox(height: 14),
             OutlinedButton.icon(
-              onPressed: () => Navigator.of(context).push<void>(
-                MaterialPageRoute<void>(
-                  builder: (_) => TimelinePreviewPage(
-                    project: current.timelineProject,
-                    videoPath: current.videoPath,
+              onPressed: () async {
+                // Local mock reward: the timeline only opens after the user
+                // explicitly completes the test card. This is a separate
+                // placement from save_to_phone.
+                final reward = await Navigator.of(context).push<bool>(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        const AdPage(placement: AdPlacement.openTimeline),
                   ),
-                ),
-              ),
+                );
+                if (!mounted || reward != true) return;
+                await Navigator.of(context).push<void>(
+                  MaterialPageRoute<void>(
+                    builder: (_) => TimelinePreviewPage(
+                      project: current.timelineProject,
+                      videoPath: current.videoPath,
+                    ),
+                  ),
+                );
+              },
               icon: const Icon(Icons.timeline_rounded),
               label: Text(
                 AppLocalizations.isRtl

@@ -75,6 +75,11 @@ class AppSettings {
   String objaverseToken;
   bool online3DAssetsEnabled;
 
+  /// Experiment flag: every ad placement in the app is a local simulation.
+  /// It is forced off in a release build (see AdsConfig.mockMode), so a
+  /// production artifact can never ship the fake reward screen.
+  bool adsTestMode;
+
   AppSettings({
     this.provider = 'gemini',
     this.geminiKey = '',
@@ -117,6 +122,7 @@ class AppSettings {
     this.polyHavenApiKey = '',
     this.objaverseToken = '',
     this.online3DAssetsEnabled = true,
+    this.adsTestMode = true,
   });
 
   String get activeKey => provider == 'gemini' ? geminiKey : mistralKey;
@@ -212,6 +218,7 @@ class AppSettings {
       polyHavenApiKey: polyHavenApiKey,
       objaverseToken: objaverseToken,
       online3DAssetsEnabled: prefs.getBool('online3DAssetsEnabled') ?? true,
+      adsTestMode: prefs.getBool('adsTestMode') ?? true,
     );
   }
 
@@ -256,6 +263,7 @@ class AppSettings {
     await prefs.setString('captionPosition', captionPosition);
     await prefs.setString('soundEffectStyle', soundEffectStyle);
     await prefs.setBool('online3DAssetsEnabled', online3DAssetsEnabled);
+    await prefs.setBool('adsTestMode', adsTestMode);
 
     // Credentials are kept out of SharedPreferences and stored securely.
     await _writeSecret('asset.sketchfab.token', sketchfabToken);
