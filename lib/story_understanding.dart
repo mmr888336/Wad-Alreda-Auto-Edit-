@@ -688,7 +688,15 @@ class StoryUnderstanding {
       final domainId = route.confidence >= 0.34 ? route.pack.id : 'everyday_explainer';
       final intent = _intentOf(segment.text, analysis);
       final relations = _relationsOf(segment.text, analysis);
-      final zones = _zonesOf(environments[i], top, analysis.second);
+      final previousZones =
+          beats.isEmpty ? const <StoryZone>[] : beats.last.zones;
+      final zones = _zonesOf(
+        environments[i],
+        top,
+        analysis.second,
+        intent: intent,
+        previousZones: previousZones,
+      );
       final shotPlan = _shotPlanOf(segment.duration, shot, hint);
       final transitionPlan = i + 1 < count
           ? TransitionDirector.plan(
@@ -786,22 +794,89 @@ class StoryUnderstanding {
     return relations;
   }
 
+  /// Zones of one beat.
+  ///
+  /// A beat always has at least one zone (its environment). It gets a second
+  /// zone when:
+  ///  * the speaker compares two places ([StoryIntent.compare]) and the
+  ///    second idea of the sentence lives in a different environment; or
+  ///  * the previous beat already had a zone in another environment and the
+  ///    current beat is a continuation of it (a portal between the two).
+  ///
+  /// The zones are connected through [StoryZone.portals] so the renderer can
+  /// move from one to the other instead of cutting.
   static List<StoryZone> _zonesOf(
     StoryEnvironment environment,
     StoryConcept? top,
-    StoryConcept? second,
-  ) {
+    StoryConcept? second, {
+    StoryIntent intent = StoryIntent.explain,
+    List<StoryZone> previousZones = const <StoryZone>[],
+  }) {
     final props = top == null
         ? const <String>[]
         : _propsOf(top, second);
-    return <StoryZone>[
-      StoryZone(
-        id: environment.name,
-        environment: environment,
-        props: props,
-      ),
-    ];
+    final primary = StoryZone(
+      id: environment.name,
+      environment: environment,
+      props: props,
+    );
+
+    // A comparison of two places: the second idea becomes a second zone.
+    if (intent == StoryIntent.compare &&
+        second != null &&
+        second.environment != environment) {
+      final secondary = StoryZone(
+        id: second.environment.name,
+        environment: second.environment,
+        props: _propsOf(second, top),
+      );
+      return <StoryZone>[
+        StoryZone(
+          id: primary.id,
+          environment: primary.environment,
+          props: primary.props,
+          portals: <String>[secondary.id],
+        ),
+        StoryZone(
+          id: secondary.id,
+          environment: secondary.environment,
+          props: secondary.props,
+          portals: <String>[primary.id],
+        ),
+      ];
+    }
+
+    // A continuation of a previous beat that already had a second zone in
+    // another environment: keep the portal so the camera can travel.
+    for (final previous in previousZones) {
+      if (previous.environment == environment) continue;
+      return <StoryZone>[
+        StoryZone(
+          id: primary.id,
+          environment: primary.environment,
+          props: primary.props,
+          portals: <String>[previous.id],
+        ),
+        StoryZone(
+          id: previous.id,
+          environment: previous.environment,
+          props: previous.props,
+          portals: <String>[primary.id],
+        ),
+      ];
+    }
+
+    return <StoryZone>[primary];
   }
+
+  /// Shot plan of one beat.
+  ///
+  /// A short beat is one shot. A beat of at least [multiShotSeconds] seconds
+  /// is split into three contiguous shots (establishing -> medium -> closeUp)
+  /// so the camera changes inside the beat instead of holding one framing.
+  /// The shots always cover the whole beat: each shot ends where the next one
+  /// begins, and the last one ends at the beat duration.
+  static const double multiShotSeconds = 3.2;
 
   static List<StoryShot> _shotPlanOf(
     double duration,
@@ -809,12 +884,42 @@ class StoryUnderstanding {
     DepthCameraMove camera,
   ) {
     if (!duration.isFinite || duration <= 0) return const <StoryShot>[];
+
+    if (duration < multiShotSeconds) {
+      return <StoryShot>[
+        StoryShot(
+          id: 'main',
+          kind: kind,
+          camera: camera,
+          start: 0,
+          end: duration,
+        ),
+      ];
+    }
+
+    // Three contiguous shots: 40% establishing, 35% medium, 25% closeUp.
+    final firstEnd = duration * 0.40;
+    final secondEnd = duration * 0.75;
     return <StoryShot>[
       StoryShot(
-        id: 'main',
-        kind: kind,
-        camera: camera,
+        id: 'establishing',
+        kind: StoryShotKind.establishing,
+        camera: DepthCameraMove.craneUp,
         start: 0,
+        end: firstEnd,
+      ),
+      StoryShot(
+        id: 'medium',
+        kind: StoryShotKind.medium,
+        camera: DepthCameraMove.orbitRight,
+        start: firstEnd,
+        end: secondEnd,
+      ),
+      StoryShot(
+        id: 'closeUp',
+        kind: StoryShotKind.closeUp,
+        camera: DepthCameraMove.pushIn,
+        start: secondEnd,
         end: duration,
       ),
     ];
