@@ -1,16 +1,15 @@
-/// Domain story packs: the vocabulary and visual grammar of one subject area.
-///
-/// [StoryUnderstanding] routes every spoken segment to a domain pack (see
-/// `StoryUnderstanding.route`). The pack tells the planner what the words of
-/// that domain mean, which environments and objects belong to it, and which
-/// shot grammar and transitions suit it. The everyday pack is the fallback
-/// when no domain word is found.
-///
-/// This is a data registry, not a second story engine: the planner in
-/// `story_understanding.dart` owns the planning, the packs only describe the
-/// domain. Pure Dart, no I/O, no network, no dependency on the planner (so
-/// there is no circular import).
-library;
+// Domain story packs: the vocabulary and visual grammar of one subject area.
+//
+// StoryUnderstanding routes every spoken segment to a domain pack (see
+// StoryUnderstanding.route). The pack tells the planner what the words of
+// that domain mean, which environments and objects belong to it, and which
+// shot grammar and transitions suit it. The everyday pack is the fallback
+// when no domain word is found.
+//
+// This is a data registry, not a second story engine: the planner in
+// story_understanding.dart owns the planning, the packs only describe the
+// domain. Pure Dart, no I/O, no network, no dependency on the planner (so
+// there is no circular import).
 
 /// One domain of the story packs.
 class DomainStoryPack {
