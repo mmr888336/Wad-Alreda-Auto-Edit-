@@ -266,14 +266,21 @@ class StoryWorldBridge {
 
   /// One motion scene for [scene] from [start] to [end] seconds, entered with
   /// [transitionIn].
+  ///
+  /// When [shot] is given the scene id carries the shot id, so several shots
+  /// of the same beat stay unique inside one project.
   static MotionScene sceneFor(
     WorldScene scene, {
     required double start,
     required double end,
     MotionTransitionKind transitionIn = MotionTransitionKind.hardCut,
+    StoryShot? shot,
   }) {
+    final id = shot == null
+        ? 'world_s${scene.beatIndex}'
+        : 'world_s${scene.beatIndex}_${shot.id}';
     return MotionScene(
-      id: 'world_s${scene.beatIndex}',
+      id: id,
       start: start,
       end: end,
       background: backgroundOf(scene),
@@ -285,6 +292,13 @@ class StoryWorldBridge {
   /// The whole video as a motion project: one scene per beat, timed like the
   /// spoken segment, entered with the transition the story chose after the
   /// beat before it. Throws [StateError] when the story has no beat.
+  ///
+  /// A beat whose [StoryBeat.shotPlan] holds more than one shot becomes one
+  /// scene per shot, with contiguous time ranges inside the beat (each shot
+  /// starts where the previous one ended). The transition into the next beat
+  /// is applied to the LAST shot of the beat only; the shots inside a beat
+  /// are entered with a hard cut, so the camera change is the cut. A beat
+  /// with zero or one shot keeps the previous single-scene behaviour.
   static MotionProject projectFor(
     StoryWorldPlan plan, {
     required String id,
@@ -301,15 +315,60 @@ class StoryWorldBridge {
       final beat = beats[i];
       final worldScene = plan.worldSceneOf(beat.index);
       if (worldScene == null) continue;
-      scenes.add(
-        sceneFor(
-          worldScene,
-          start: beat.segment.start,
-          end: beat.segment.end,
-          transitionIn:
-              i == 0 ? MotionTransitionKind.hardCut : beats[i - 1].transitionToNext,
-        ),
-      );
+
+      final beatStart = beat.segment.start;
+      final beatEnd = beat.segment.end;
+      final beatDuration = beatEnd - beatStart;
+      final transitionIn =
+          i == 0 ? MotionTransitionKind.hardCut : beats[i - 1].transitionToNext;
+
+      final shots = beat.shotPlan;
+      if (shots.length <= 1) {
+        scenes.add(
+          sceneFor(
+            worldScene,
+            start: beatStart,
+            end: beatEnd,
+            transitionIn: transitionIn,
+          ),
+        );
+        continue;
+      }
+
+      for (var s = 0; s < shots.length; s++) {
+        final shot = shots[s];
+        final shotStart =
+            (beatStart + shot.start).clamp(beatStart, beatEnd).toDouble();
+        final shotEnd =
+            (beatStart + shot.end).clamp(shotStart, beatEnd).toDouble();
+        if (shotEnd - shotStart < 0.05) continue;
+        final isLast = s == shots.length - 1;
+        scenes.add(
+          sceneFor(
+            worldScene,
+            start: shotStart,
+            end: shotEnd,
+            transitionIn: isLast ? transitionIn : MotionTransitionKind.hardCut,
+            shot: shot,
+          ),
+        );
+      }
+
+      // A beat whose shots were all too short still gets one scene, so the
+      // spoken segment is never left without a picture.
+      if (scenes.isEmpty || scenes.last.end < beatEnd - 0.001) {
+        final last = scenes.isEmpty ? null : scenes.last;
+        if (last == null || last.start < beatStart) {
+          scenes.add(
+            sceneFor(
+              worldScene,
+              start: beatStart,
+              end: beatEnd,
+              transitionIn: transitionIn,
+            ),
+          );
+        }
+      }
     }
     return MotionProject(
       id: id,
