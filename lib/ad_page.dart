@@ -82,48 +82,84 @@ class AdsConfig {
 /// request. Each placement has its own in-flight guard, so a double tap cannot
 /// grant two rewards, and a completed `save_to_phone` cannot unlock
 /// `open_timeline`.
+class _MockSession {
+  _MockSession(this.placement);
+
+  final AdPlacement placement;
+  final Completer<MockRewardResult> completer =
+      Completer<MockRewardResult>();
+  Timer? timer;
+
+  /// Guards against a second resolution (timer vs. complete vs. cancel).
+  bool resolved = false;
+
+  void resolve(MockRewardResult result) {
+    if (resolved) return;
+    resolved = true;
+    timer?.cancel();
+    timer = null;
+    if (!completer.isCompleted) {
+      completer.complete(result);
+    }
+  }
+}
+
 class MockRewardedAdGateway {
   MockRewardedAdGateway._();
 
-  static final Set<AdPlacement> _inFlight = <AdPlacement>{};
+  static final Map<AdPlacement, _MockSession> _sessions =
+      <AdPlacement, _MockSession>{};
 
   /// True while a reward for [placement] is being shown.
   static bool isInFlight(AdPlacement placement) =>
-      _inFlight.contains(placement);
+      _sessions.containsKey(placement);
 
   /// Runs the local simulation for [placement].
   ///
-  /// Returns [MockRewardResult.completed] only when the user explicitly
-  /// completes the test card. Cancelling or failing grants nothing.
-  static Future<MockRewardResult> show(AdPlacement placement) async {
+  /// Returns a single future per request. It resolves exactly once:
+  /// - [MockRewardResult.completed] when the UI calls [complete] before the
+  ///   timer fires,
+  /// - [MockRewardResult.cancelled] when the UI calls [cancel],
+  /// - [MockRewardResult.completed] when the timer fires first (the local
+  ///   simulation finished on its own),
+  /// - [MockRewardResult.failed] when the mock is disabled or a reward for
+  ///   this placement is already in flight.
+  static Future<MockRewardResult> show(AdPlacement placement) {
     if (!AdsConfig.mockMode) {
-      return MockRewardResult.failed;
+      return Future<MockRewardResult>.value(MockRewardResult.failed);
     }
-    if (!_inFlight.add(placement)) {
+    if (_sessions.containsKey(placement)) {
       // A reward for this placement is already running: do not grant a second.
-      return MockRewardResult.failed;
+      return Future<MockRewardResult>.value(MockRewardResult.failed);
     }
-    try {
-      // The UI drives the actual completion; this delay only keeps the
-      // contract honest for callers that do not show a card.
-      await Future<void>.delayed(AdsConfig.mockDuration);
-      return MockRewardResult.completed;
-    } finally {
-      _inFlight.remove(placement);
-    }
+    final session = _MockSession(placement);
+    _sessions[placement] = session;
+    session.timer = Timer(AdsConfig.mockDuration, () {
+      _finish(session, MockRewardResult.completed);
+    });
+    return session.completer.future;
   }
 
   /// Marks [placement] as completed from the UI. Returns false when the
   /// placement was not in flight (double tap, or a different placement).
   static bool complete(AdPlacement placement) {
-    if (!_inFlight.contains(placement)) return false;
-    _inFlight.remove(placement);
+    final session = _sessions[placement];
+    if (session == null || session.resolved) return false;
+    _finish(session, MockRewardResult.completed);
     return true;
   }
 
   /// Marks [placement] as cancelled from the UI.
   static void cancel(AdPlacement placement) {
-    _inFlight.remove(placement);
+    final session = _sessions[placement];
+    if (session == null) return;
+    _finish(session, MockRewardResult.cancelled);
+  }
+
+  static void _finish(_MockSession session, MockRewardResult result) {
+    if (session.resolved) return;
+    _sessions.remove(session.placement);
+    session.resolve(result);
   }
 }
 
@@ -145,6 +181,9 @@ class _AdPageState extends State<AdPage> {
   bool _loading = true;
   bool _canComplete = false;
   String _error = '';
+
+  /// The single future returned by the gateway for this page's request.
+  Future<MockRewardResult>? _session;
 
   @override
   void initState() {
@@ -177,16 +216,30 @@ class _AdPageState extends State<AdPage> {
       _canComplete = false;
     });
 
-    // Reserve the placement so a double tap cannot start a second session.
-    // The gateway's own delay is bypassed here: the UI drives completion.
-    MockRewardedAdGateway.show(widget.placement);
+    // One future per request. The gateway owns the timer and resolves it
+    // exactly once (complete / cancel / timer), so there is no race here.
+    final session = MockRewardedAdGateway.show(widget.placement);
+    _session = session;
 
-    await Future<void>.delayed(AdsConfig.mockDuration);
+    final result = await session;
     if (!mounted) return;
-    setState(() {
-      _loading = false;
-      _canComplete = true;
-    });
+    if (result == MockRewardResult.failed) {
+      setState(() {
+        _loading = false;
+        _error = 'تعذّر بدء المحاكاة. حاول مرة أخرى.';
+      });
+      return;
+    }
+    // The gateway resolved on its own (timer) or was cancelled elsewhere.
+    // Only a completed result grants the reward.
+    if (result == MockRewardResult.completed) {
+      setState(() {
+        _loading = false;
+        _canComplete = true;
+      });
+    } else {
+      Navigator.of(context).pop(false);
+    }
   }
 
   void _complete() {
