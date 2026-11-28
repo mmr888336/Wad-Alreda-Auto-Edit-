@@ -14,7 +14,7 @@
 /// The output is renderer-neutral data ([WorldLayerSpec]); every layer has a
 /// depth (0 far .. 1 near) so the depth camera and the person matte can put
 /// things behind and in front of the speaker. Pure Dart, no I/O.
-library;
+library cinematic_world;
 
 import 'story_understanding.dart';
 
