@@ -792,6 +792,7 @@ class World3DGlbBuilder {
         return _Geometry.quad(size.x, size.y);
       case World3DShape.box:
       case World3DShape.character:
+      case World3DShape.model:
         return _Geometry.box(size.x, size.y, size.z);
     }
   }

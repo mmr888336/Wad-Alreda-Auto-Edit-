@@ -57,8 +57,9 @@ enum World3DRole { backWall, floor, setPiece, character, prop }
 
 /// How an object is built. [box], [sphere] and [cylinder] (axis y) are
 /// procedural stand-ins; [character] is the one recurring hero; [billboard] is
-/// a flat picture standing in the world (a prop that has no 3D model yet).
-enum World3DShape { box, sphere, cylinder, character, billboard }
+/// a flat picture standing in the world (a prop that has no 3D model yet);
+/// [model] is a real GLB model loaded from [World3DObject.modelPath].
+enum World3DShape { box, sphere, cylinder, character, billboard, model }
 
 class World3DObject {
   final String id;
@@ -77,6 +78,10 @@ class World3DObject {
   /// Base colour as `#RRGGBB`.
   final String color;
 
+  /// Path of the GLB file of a [World3DShape.model] object (see
+  /// [World3DGlbBuilder.readModel]). Ignored for other shapes.
+  final String? modelPath;
+
   const World3DObject({
     required this.id,
     required this.role,
@@ -85,6 +90,7 @@ class World3DObject {
     required this.size,
     required this.color,
     this.assetKey,
+    this.modelPath,
   });
 }
 
