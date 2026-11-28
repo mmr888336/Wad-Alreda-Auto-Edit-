@@ -266,6 +266,16 @@ class CinematicWorld {
         return 'sparks';
       case StoryEnvironment.outdoors:
         return 'pollen';
+      case StoryEnvironment.bathroom:
+        return 'dust';
+      case StoryEnvironment.kitchen:
+        return 'dust';
+      case StoryEnvironment.bedroom:
+        return 'dust';
+      case StoryEnvironment.livingRoom:
+        return 'dust';
+      case StoryEnvironment.hallway:
+        return 'dust';
     }
   }
 
