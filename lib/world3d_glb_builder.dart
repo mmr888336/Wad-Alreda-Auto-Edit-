@@ -31,11 +31,13 @@
 library;
 
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
+import 'glb_inspector.dart';
 import 'world3d_model.dart';
 import 'world3d_planner.dart' show World3DScene;
 import 'world3d_rig.dart';
@@ -190,9 +192,15 @@ class World3DGlbBuilder {
   /// The GLB of [scene]. [billboardImages] maps the asset key of a prop layer
   /// (`decor:coins`) to the PNG bytes of its picture. With [cameraSeconds] the
   /// file also carries the camera move of the scene as a rig animation.
+  ///
+  /// [modelBytes] maps the asset key of a [World3DShape.model] object to the
+  /// bytes of its GLB (see [World3DGlbBuilder.readModel]); those meshes are
+  /// merged into the scene file. A model that cannot be merged is skipped and
+  /// listed in [World3DGlb.skipped].
   static World3DGlb build(
     World3DScene scene, {
     Map<String, Uint8List> billboardImages = const <String, Uint8List>{},
+    Map<String, Uint8List> modelBytes = const <String, Uint8List>{},
     int segments = 20,
     double? cameraSeconds,
     double holdStart = 0.5,
@@ -202,6 +210,7 @@ class World3DGlbBuilder {
     return buildObjects(
       scene.objects,
       billboardImages: billboardImages,
+      modelBytes: modelBytes,
       segments: segments,
       camera: cameraSeconds == null ? null : scene.camera,
       cameraSeconds: cameraSeconds,
@@ -211,6 +220,22 @@ class World3DGlbBuilder {
     );
   }
 
+  /// Reads the GLB at [path] for [build]'s [modelBytes]. Returns null when the
+  /// file is missing or fails [GlbInspector] (a bad model never reaches the
+  /// native engine).
+  static Future<Uint8List?> readModel(String path) async {
+    try {
+      final file = File(path);
+      if (!await file.exists()) return null;
+      final bytes = await file.readAsBytes();
+      final report = GlbInspector.inspect(bytes);
+      if (!report.isSafe) return null;
+      return bytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// The GLB of [objects]. Throws [StateError] when none can be drawn.
   ///
   /// The rig animation is written only when [camera] is active and
@@ -218,6 +243,7 @@ class World3DGlbBuilder {
   static World3DGlb buildObjects(
     List<World3DObject> objects, {
     Map<String, Uint8List> billboardImages = const <String, Uint8List>{},
+    Map<String, Uint8List> modelBytes = const <String, Uint8List>{},
     int segments = 20,
     World3DCameraPath? camera,
     double? cameraSeconds,
@@ -305,7 +331,13 @@ class World3DGlbBuilder {
         skipped.add('${object.id}: invalid position or size');
         continue;
       }
-      final parts = _partsOf(object, seg, billboardImages, skipped);
+      final parts = _partsOf(
+        object,
+        seg,
+        billboardImages,
+        modelBytes,
+        skipped,
+      );
       if (parts.isEmpty) continue;
 
       final primitives = <Map<String, Object>>[];
@@ -589,9 +621,22 @@ class World3DGlbBuilder {
     World3DObject o,
     int seg,
     Map<String, Uint8List> images,
+    Map<String, Uint8List> models,
     List<String> skipped,
   ) {
     switch (o.shape) {
+      case World3DShape.model:
+        final key = o.assetKey;
+        final bytes = key == null ? null : models[key];
+        if (bytes == null) {
+          skipped.add('${o.id}: no GLB for ${o.assetKey}');
+          return const <_Part>[];
+        }
+        final parts = _modelParts(o, bytes, skipped);
+        if (parts.isEmpty) {
+          skipped.add('${o.id}: the GLB has no drawable mesh');
+        }
+        return parts;
       case World3DShape.billboard:
         final png = o.assetKey == null ? null : images[o.assetKey];
         if (png == null) {
@@ -625,6 +670,86 @@ class World3DGlbBuilder {
           ),
         ];
     }
+  }
+
+  /// The parts of a real GLB model, fitted into the box [o.size] and centred
+  /// on [o.position]. The model's own materials and embedded images are kept.
+  /// A model that cannot be parsed returns an empty list (the caller skips it).
+  static List<_Part> _modelParts(
+    World3DObject o,
+    Uint8List bytes,
+    List<String> skipped,
+  ) {
+    final parsed = _ParsedGlb.parse(bytes);
+    if (parsed == null) {
+      skipped.add('${o.id}: the GLB could not be parsed');
+      return const <_Part>[];
+    }
+    if (parsed.unsupported.isNotEmpty) {
+      skipped.add(
+        '${o.id}: unsupported extension ${parsed.unsupported.join(', ')}',
+      );
+      return const <_Part>[];
+    }
+
+    final parts = <_Part>[];
+    for (final primitive in parsed.primitives) {
+      final mesh = primitive.mesh;
+      if (mesh.vertexCount == 0 || mesh.indices.isEmpty) continue;
+      if (mesh.vertexCount > 65535) {
+        skipped.add('${o.id}: a primitive has too many vertices');
+        continue;
+      }
+      parts.add(
+        _Part(
+          mesh,
+          primitive.color,
+          imageKey: primitive.imageKey,
+          png: primitive.png,
+        ),
+      );
+    }
+    if (parts.isEmpty) return const <_Part>[];
+
+    // Fit the model into the box of the object: centre it, scale it so its
+    // longest side matches the box, then move it to the object position.
+    final lo = <double>[double.infinity, double.infinity, double.infinity];
+    final hi = <double>[
+      double.negativeInfinity,
+      double.negativeInfinity,
+      double.negativeInfinity,
+    ];
+    for (final part in parts) {
+      final p = part.mesh.positions;
+      for (var i = 0; i < p.length; i += 3) {
+        for (var axis = 0; axis < 3; axis++) {
+          final value = p[i + axis];
+          if (value < lo[axis]) lo[axis] = value;
+          if (value > hi[axis]) hi[axis] = value;
+        }
+      }
+    }
+    final extent = <double>[
+      hi[0] - lo[0],
+      hi[1] - lo[1],
+      hi[2] - lo[2],
+    ];
+    final longest = math.max(extent[0], math.max(extent[1], extent[2]));
+    final target = math.max(o.size.x, math.max(o.size.y, o.size.z));
+    final scale = longest <= 1e-9 ? 1.0 : target / longest;
+    final cx = (lo[0] + hi[0]) / 2;
+    final cy = (lo[1] + hi[1]) / 2;
+    final cz = (lo[2] + hi[2]) / 2;
+
+    for (final part in parts) {
+      final p = part.mesh.positions;
+      for (var i = 0; i < p.length; i += 3) {
+        p[i] = (p[i] - cx) * scale;
+        p[i + 1] = (p[i + 1] - cy) * scale;
+        p[i + 2] = (p[i + 2] - cz) * scale;
+      }
+    }
+    return parts;
   }
 
   /// The detailed parts of a known set piece (see world3d_set_pieces.dart), or
@@ -829,6 +954,341 @@ class World3DGlbBuilder {
       ..add(binary);
     return out.takeBytes();
   }
+}
+
+/// A GLB read back into meshes, so its geometry can be merged into the scene
+/// file. Only what the scene builder needs is kept: positions, normals, UVs,
+/// indices, a base colour and an embedded PNG per primitive.
+class _ParsedGlb {
+  final List<_ParsedPrimitive> primitives;
+  final List<String> unsupported;
+
+  const _ParsedGlb(this.primitives, this.unsupported);
+
+  static _ParsedGlb? parse(Uint8List bytes) {
+    if (bytes.length < 28 ||
+        bytes[0] != 0x67 ||
+        bytes[1] != 0x6c ||
+        bytes[2] != 0x54 ||
+        bytes[3] != 0x46) {
+      return null;
+    }
+    final data = ByteData.sublistView(bytes);
+    if (data.getUint32(4, Endian.little) != 2) return null;
+    if (data.getUint32(8, Endian.little) != bytes.length) return null;
+
+    final jsonLength = data.getUint32(12, Endian.little);
+    if (data.getUint32(16, Endian.little) != 0x4E4F534A) return null;
+    if (20 + jsonLength > bytes.length) return null;
+
+    Map<String, dynamic> root;
+    try {
+      final decoded = jsonDecode(
+        utf8.decode(
+          Uint8List.sublistView(bytes, 20, 20 + jsonLength),
+          allowMalformed: true,
+        ),
+      );
+      if (decoded is! Map) return null;
+      root = Map<String, dynamic>.from(decoded);
+    } catch (_) {
+      return null;
+    }
+
+    var binStart = -1;
+    final next = 20 + jsonLength;
+    if (next + 8 <= bytes.length &&
+        data.getUint32(next + 4, Endian.little) == 0x004E4942) {
+      binStart = next + 8;
+    }
+    if (binStart < 0) return null;
+
+    final required = root['extensionsRequired'];
+    final unsupported = <String>[];
+    if (required is List) {
+      for (final name in required.whereType<String>()) {
+        if (GlbInspector.unsupportedRequired.contains(name)) {
+          unsupported.add(name);
+        }
+      }
+    }
+    if (unsupported.isNotEmpty) {
+      return _ParsedGlb(const <_ParsedPrimitive>[], unsupported);
+    }
+
+    final accessors = root['accessors'] is List
+        ? root['accessors'] as List
+        : const <dynamic>[];
+    final views = root['bufferViews'] is List
+        ? root['bufferViews'] as List
+        : const <dynamic>[];
+    final materials = root['materials'] is List
+        ? root['materials'] as List
+        : const <dynamic>[];
+    final images = root['images'] is List
+        ? root['images'] as List
+        : const <dynamic>[];
+    final textures = root['textures'] is List
+        ? root['textures'] as List
+        : const <dynamic>[];
+    final meshes = root['meshes'] is List
+        ? root['meshes'] as List
+        : const <dynamic>[];
+
+    Uint8List? viewBytes(int index) {
+      if (index < 0 || index >= views.length) return null;
+      final view = views[index];
+      if (view is! Map) return null;
+      final offset = (view['byteOffset'] as num?)?.toInt() ?? 0;
+      final length = (view['byteLength'] as num?)?.toInt() ?? 0;
+      final start = binStart + offset;
+      if (length <= 0 || start < 0 || start + length > bytes.length) {
+        return null;
+      }
+      return Uint8List.sublistView(bytes, start, start + length);
+    }
+
+    List<double>? readFloats(int accessorIndex, int components) {
+      if (accessorIndex < 0 || accessorIndex >= accessors.length) return null;
+      final accessor = accessors[accessorIndex];
+      if (accessor is! Map) return null;
+      final viewIndex = (accessor['bufferView'] as num?)?.toInt() ?? -1;
+      final count = (accessor['count'] as num?)?.toInt() ?? 0;
+      if (count <= 0) return null;
+      final raw = viewBytes(viewIndex);
+      if (raw == null) return null;
+      final offset = (accessor['byteOffset'] as num?)?.toInt() ?? 0;
+      final stride = (accessor['byteStride'] as num?)?.toInt() ?? 0;
+      final componentType = (accessor['componentType'] as num?)?.toInt() ?? 0;
+      if (componentType != 5126) return null;
+      final elementSize = components * 4;
+      final step = stride > 0 ? stride : elementSize;
+      final needed = offset + step * (count - 1) + elementSize;
+      if (needed > raw.length) return null;
+      final out = <double>[];
+      final view = ByteData.sublistView(raw);
+      for (var i = 0; i < count; i++) {
+        final base = offset + i * step;
+        for (var c = 0; c < components; c++) {
+          out.add(view.getFloat32(base + c * 4, Endian.little));
+        }
+      }
+      return out;
+    }
+
+    List<int>? readIndices(int accessorIndex) {
+      if (accessorIndex < 0 || accessorIndex >= accessors.length) return null;
+      final accessor = accessors[accessorIndex];
+      if (accessor is! Map) return null;
+      final viewIndex = (accessor['bufferView'] as num?)?.toInt() ?? -1;
+      final count = (accessor['count'] as num?)?.toInt() ?? 0;
+      if (count <= 0) return null;
+      final raw = viewBytes(viewIndex);
+      if (raw == null) return null;
+      final offset = (accessor['byteOffset'] as num?)?.toInt() ?? 0;
+      final componentType = (accessor['componentType'] as num?)?.toInt() ?? 0;
+      final size = switch (componentType) {
+        5121 => 1,
+        5123 => 2,
+        5125 => 4,
+        _ => 0,
+      };
+      if (size == 0) return null;
+      if (offset + count * size > raw.length) return null;
+      final view = ByteData.sublistView(raw);
+      final out = <int>[];
+      for (var i = 0; i < count; i++) {
+        final at = offset + i * size;
+        out.add(switch (size) {
+          1 => view.getUint8(at),
+          2 => view.getUint16(at, Endian.little),
+          _ => view.getUint32(at, Endian.little),
+        });
+      }
+      return out;
+    }
+
+    String? imageKeyFor(int materialIndex) {
+      if (materialIndex < 0 || materialIndex >= materials.length) return null;
+      final material = materials[materialIndex];
+      if (material is! Map) return null;
+      final pbr = material['pbrMetallicRoughness'];
+      if (pbr is! Map) return null;
+      final texture = pbr['baseColorTexture'];
+      if (texture is! Map) return null;
+      final textureIndex = (texture['index'] as num?)?.toInt() ?? -1;
+      if (textureIndex < 0 || textureIndex >= textures.length) return null;
+      final tex = textures[textureIndex];
+      if (tex is! Map) return null;
+      final source = (tex['source'] as num?)?.toInt() ?? -1;
+      if (source < 0 || source >= images.length) return null;
+      final image = images[source];
+      if (image is! Map) return null;
+      final viewIndex = (image['bufferView'] as num?)?.toInt() ?? -1;
+      final raw = viewBytes(viewIndex);
+      if (raw == null) return null;
+      return 'model:${source}:${raw.length}';
+    }
+
+    Uint8List? imageBytesFor(int materialIndex) {
+      if (materialIndex < 0 || materialIndex >= materials.length) return null;
+      final material = materials[materialIndex];
+      if (material is! Map) return null;
+      final pbr = material['pbrMetallicRoughness'];
+      if (pbr is! Map) return null;
+      final texture = pbr['baseColorTexture'];
+      if (texture is! Map) return null;
+      final textureIndex = (texture['index'] as num?)?.toInt() ?? -1;
+      if (textureIndex < 0 || textureIndex >= textures.length) return null;
+      final tex = textures[textureIndex];
+      if (tex is! Map) return null;
+      final source = (tex['source'] as num?)?.toInt() ?? -1;
+      if (source < 0 || source >= images.length) return null;
+      final image = images[source];
+      if (image is! Map) return null;
+      final viewIndex = (image['bufferView'] as num?)?.toInt() ?? -1;
+      return viewBytes(viewIndex);
+    }
+
+    String colorFor(int materialIndex) {
+      if (materialIndex < 0 || materialIndex >= materials.length) {
+        return '#B9B9C0';
+      }
+      final material = materials[materialIndex];
+      if (material is! Map) return '#B9B9C0';
+      final pbr = material['pbrMetallicRoughness'];
+      if (pbr is! Map) return '#B9B9C0';
+      final factor = pbr['baseColorFactor'];
+      if (factor is! List || factor.length < 3) return '#B9B9C0';
+      int channel(int i) {
+        final value = factor[i];
+        if (value is! num) return 0x80;
+        final linear = value.toDouble().clamp(0.0, 1.0);
+        final srgb = linear <= 0.0031308
+            ? linear * 12.92
+            : 1.055 * math.pow(linear, 1 / 2.4) - 0.055;
+        return (srgb * 255).round().clamp(0, 255).toInt();
+      }
+
+      String hex(int value) => value.toRadixString(16).padLeft(2, '0');
+      return '#${hex(channel(0))}${hex(channel(1))}${hex(channel(2))}'
+          .toUpperCase();
+    }
+
+    final primitives = <_ParsedPrimitive>[];
+    for (final mesh in meshes) {
+      if (mesh is! Map) continue;
+      final rows = mesh['primitives'];
+      if (rows is! List) continue;
+      for (final row in rows) {
+        if (row is! Map) continue;
+        final attributes = row['attributes'];
+        if (attributes is! Map) continue;
+        final positionIndex = (attributes['POSITION'] as num?)?.toInt() ?? -1;
+        final positions = readFloats(positionIndex, 3);
+        if (positions == null || positions.isEmpty) continue;
+        final count = positions.length ~/ 3;
+
+        final normalIndex = (attributes['NORMAL'] as num?)?.toInt() ?? -1;
+        var normals = readFloats(normalIndex, 3);
+        if (normals == null || normals.length != positions.length) {
+          normals = _flatNormals(positions);
+        }
+
+        final uvIndex = (attributes['TEXCOORD_0'] as num?)?.toInt() ?? -1;
+        final uvs = readFloats(uvIndex, 2);
+
+        final indexAccessor = (row['indices'] as num?)?.toInt() ?? -1;
+        var indices = readIndices(indexAccessor);
+        if (indices == null || indices.isEmpty) {
+          indices = <int>[for (var i = 0; i < count; i++) i];
+        }
+        if (indices.any((index) => index < 0 || index >= count)) continue;
+
+        final materialIndex = (row['material'] as num?)?.toInt() ?? -1;
+        final meshData = _Mesh();
+        for (var i = 0; i < count; i++) {
+          meshData.vertex(
+            positions[i * 3],
+            positions[i * 3 + 1],
+            positions[i * 3 + 2],
+            normals[i * 3],
+            normals[i * 3 + 1],
+            normals[i * 3 + 2],
+            u: uvs != null && uvs.length >= count * 2 ? uvs[i * 2] : null,
+            v: uvs != null && uvs.length >= count * 2 ? uvs[i * 2 + 1] : null,
+          );
+        }
+        for (var i = 0; i + 2 < indices.length; i += 3) {
+          meshData.triangle(indices[i], indices[i + 1], indices[i + 2]);
+        }
+
+        primitives.add(
+          _ParsedPrimitive(
+            mesh: meshData,
+            color: colorFor(materialIndex),
+            imageKey: imageKeyFor(materialIndex),
+            png: imageBytesFor(materialIndex),
+          ),
+        );
+      }
+    }
+
+    return _ParsedGlb(primitives, const <String>[]);
+  }
+
+  /// Normals for a mesh that has none: one normal per triangle, so the model
+  /// still shades correctly.
+  static List<double> _flatNormals(List<double> positions) {
+    final count = positions.length ~/ 3;
+    final normals = List<double>.filled(positions.length, 0);
+    for (var i = 0; i + 2 < count; i += 3) {
+      final ax = positions[i * 3];
+      final ay = positions[i * 3 + 1];
+      final az = positions[i * 3 + 2];
+      final bx = positions[(i + 1) * 3];
+      final by = positions[(i + 1) * 3 + 1];
+      final bz = positions[(i + 1) * 3 + 2];
+      final cx = positions[(i + 2) * 3];
+      final cy = positions[(i + 2) * 3 + 1];
+      final cz = positions[(i + 2) * 3 + 2];
+      final ux = bx - ax;
+      final uy = by - ay;
+      final uz = bz - az;
+      final vx = cx - ax;
+      final vy = cy - ay;
+      final vz = cz - az;
+      var nx = uy * vz - uz * vy;
+      var ny = uz * vx - ux * vz;
+      var nz = ux * vy - uy * vx;
+      final length = math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (length > 1e-9) {
+        nx /= length;
+        ny /= length;
+        nz /= length;
+      }
+      for (var k = 0; k < 3; k++) {
+        normals[(i + k) * 3] = nx;
+        normals[(i + k) * 3 + 1] = ny;
+        normals[(i + k) * 3 + 2] = nz;
+      }
+    }
+    return normals;
+  }
+}
+
+class _ParsedPrimitive {
+  final _Mesh mesh;
+  final String color;
+  final String? imageKey;
+  final Uint8List? png;
+
+  const _ParsedPrimitive({
+    required this.mesh,
+    required this.color,
+    this.imageKey,
+    this.png,
+  });
 }
 
 /// Procedural meshes. Every triangle is counter-clockwise seen from outside.
