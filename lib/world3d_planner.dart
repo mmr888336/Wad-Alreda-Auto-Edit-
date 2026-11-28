@@ -19,6 +19,7 @@ library;
 import 'cinematic_world.dart';
 import 'depth_camera_model.dart';
 import 'story_understanding.dart' show StoryEnvironment;
+import 'three_d_asset_resolver.dart';
 import 'world3d_model.dart';
 
 /// The 3D scene of one beat.
@@ -180,6 +181,7 @@ class World3DPlanner {
     WorldCharacter character = const WorldCharacter(),
     DepthCameraMove move = DepthCameraMove.none,
     double intensity = 0.8,
+    Map<String, ResolvedAsset> resolved = const <String, ResolvedAsset>{},
   }) {
     final layout = CinematicWorld.layouts[scene.environment];
     final wallColor = layout?.backdropColor ?? '#1E2230';
@@ -234,17 +236,34 @@ class World3DPlanner {
           );
         } else {
           final width = spec.scale * frameWidth;
-          objects.add(
-            World3DObject(
-              id: spec.id,
-              role: World3DRole.prop,
-              shape: World3DShape.billboard,
-              assetKey: key,
-              position: stage.pointAt(spec.x, spec.y, spec.depth),
-              size: Vec3(width, width, 0.02),
-              color: '#FFFFFF',
-            ),
-          );
+          final resolvedAsset = resolved[key];
+          final localPath = resolvedAsset?.localPath;
+          if (localPath != null && localPath.isNotEmpty) {
+            objects.add(
+              World3DObject(
+                id: spec.id,
+                role: World3DRole.prop,
+                shape: World3DShape.model,
+                assetKey: key,
+                position: stage.pointAt(spec.x, spec.y, spec.depth),
+                size: Vec3(width, width, 0.02),
+                color: '#FFFFFF',
+                modelPath: localPath,
+              ),
+            );
+          } else {
+            objects.add(
+              World3DObject(
+                id: spec.id,
+                role: World3DRole.prop,
+                shape: World3DShape.billboard,
+                assetKey: key,
+                position: stage.pointAt(spec.x, spec.y, spec.depth),
+                size: Vec3(width, width, 0.02),
+                color: '#FFFFFF',
+              ),
+            );
+          }
         }
       }
       // Backdrops (`bg:`), text and effects are not 3D objects: the room is
