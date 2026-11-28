@@ -28,7 +28,6 @@
 /// native engine accept it. A scene with nothing drawable throws a
 /// [StateError]: the caller then keeps the 2.5D scene (see RenderRouter).
 /// Pure Dart, no I/O.
-library;
 
 import 'dart:convert';
 import 'dart:io';
