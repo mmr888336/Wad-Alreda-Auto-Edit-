@@ -5,6 +5,11 @@ import 'package:auto_edit/ad_page.dart';
 
 void main() {
   group('MockRewardedAdGateway', () {
+    // These tests exercise the enabled gate, so force it on regardless of the
+    // build-time default (which is false in production).
+    setUp(() => AdsConfig.debugSetAdsGate(true));
+    tearDown(() => AdsConfig.debugSetAdsGate(null));
+
     test('completes before the timer fires', () {
       fakeAsync((async) {
         MockRewardResult? result;

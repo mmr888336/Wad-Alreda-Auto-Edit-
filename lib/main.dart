@@ -584,25 +584,29 @@ class _HomePageState extends State<HomePage> {
       final settings = await AppSettings.load();
       JobControl.reset();
 
-      final adCompleted = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(
-          builder: (_) => const AdPage(placement: AdPlacement.preExport),
-        ),
-      );
+      // When the reward gate is disabled the ad page is skipped entirely:
+      // there is no session to complete, so the export continues directly.
+      if (AdsConfig.adsGate) {
+        final adCompleted = await Navigator.of(context).push<bool>(
+          MaterialPageRoute(
+            builder: (_) => const AdPage(placement: AdPlacement.preExport),
+          ),
+        );
 
-      if (!mounted) return;
+        if (!mounted) return;
 
-      if (adCompleted != true) {
+        if (adCompleted != true) {
+          setState(() {
+            progress = null;
+            status = AppLocalizations.t('adExportStopped');
+          });
+          return;
+        }
+
         setState(() {
-          progress = null;
-          status = AppLocalizations.t('adExportStopped');
+          status = AppLocalizations.t('adFinished');
         });
-        return;
       }
-
-      setState(() {
-        status = AppLocalizations.t('adFinished');
-      });
 
       final out = await _pipeline(source, settings);
 
@@ -656,12 +660,15 @@ class _HomePageState extends State<HomePage> {
 
     // Local mock reward: the gallery write only happens after the user
     // explicitly completes the test card. Cancel/failure grants nothing.
-    final reward = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => const AdPage(placement: AdPlacement.saveToPhone),
-      ),
-    );
-    if (!mounted || reward != true) return;
+    // When the gate is disabled the page is skipped and the save continues.
+    if (AdsConfig.adsGate) {
+      final reward = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => const AdPage(placement: AdPlacement.saveToPhone),
+        ),
+      );
+      if (!mounted || reward != true) return;
+    }
 
     setState(() {
       saving = true;
@@ -1101,14 +1108,17 @@ class _HomePageState extends State<HomePage> {
               onPressed: () async {
                 // Local mock reward: the timeline only opens after the user
                 // explicitly completes the test card. This is a separate
-                // placement from save_to_phone.
-                final reward = await Navigator.of(context).push<bool>(
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        const AdPage(placement: AdPlacement.openTimeline),
-                  ),
-                );
-                if (!mounted || reward != true) return;
+                // placement from save_to_phone. When the gate is disabled the
+                // page is skipped and the timeline opens directly.
+                if (AdsConfig.adsGate) {
+                  final reward = await Navigator.of(context).push<bool>(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          const AdPage(placement: AdPlacement.openTimeline),
+                    ),
+                  );
+                  if (!mounted || reward != true) return;
+                }
                 await Navigator.of(context).push<void>(
                   MaterialPageRoute<void>(
                     builder: (_) => TimelinePreviewPage(

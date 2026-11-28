@@ -68,8 +68,23 @@ class AdsConfig {
   /// completed immediately, with no screen, no delay and no message, so the
   /// original action continues straight away. Set it to `true` to run the
   /// current local simulation path.
-  static const bool adsGate =
+  static const bool _adsGateBuild =
       bool.fromEnvironment('ADS_GATE', defaultValue: false);
+
+  /// Runtime override used by tests only. Null means "use the build-time
+  /// value". Production code never sets it, so the shipped default stays
+  /// `false` unless `--dart-define=ADS_GATE=true` was passed.
+  static bool? _adsGateOverride;
+
+  /// True when the reward gate is enabled. Reads the build-time flag unless a
+  /// test explicitly overrode it via [debugSetAdsGate].
+  static bool get adsGate => _adsGateOverride ?? _adsGateBuild;
+
+  /// Test-only hook to force the gate on or off. Pass null to restore the
+  /// build-time value.
+  static void debugSetAdsGate(bool? value) {
+    _adsGateOverride = value;
+  }
 
   /// True when the local simulation may run. Independent of `kDebugMode` and
   /// `kReleaseMode`, so a CI release build still gets the experiment mode
@@ -195,9 +210,6 @@ class _AdPageState extends State<AdPage> {
   bool _canComplete = false;
   String _error = '';
 
-  /// The single future returned by the gateway for this page's request.
-  Future<MockRewardResult>? _session;
-
   @override
   void initState() {
     super.initState();
@@ -231,10 +243,7 @@ class _AdPageState extends State<AdPage> {
 
     // One future per request. The gateway owns the timer and resolves it
     // exactly once (complete / cancel / timer), so there is no race here.
-    final session = MockRewardedAdGateway.show(widget.placement);
-    _session = session;
-
-    final result = await session;
+    final result = await MockRewardedAdGateway.show(widget.placement);
     if (!mounted) return;
     if (result == MockRewardResult.failed) {
       setState(() {
