@@ -22,7 +22,6 @@
 ///
 /// The native calls are injected ([World3DNativeOps]) so the whole flow is
 /// tested without a device.
-library;
 
 import 'dart:io';
 import 'dart:typed_data';
