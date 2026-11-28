@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show kDebugMode, kReleaseMode;
 import 'package:flutter/material.dart';
 
 /// Where a rewarded action is being requested from. Each placement is an
@@ -49,14 +48,25 @@ enum MockRewardResult { completed, cancelled, failed }
 ///
 /// During the experiment period every ad placement in the app is a LOCAL
 /// simulation: no ad SDK is initialised, no network request is made, and no
-/// impression/click/revenue event is sent anywhere. The mock is only allowed
-/// in debug builds; a release build refuses to run it.
+/// impression/click/revenue event is sent anywhere.
+///
+/// Whether the simulation is allowed is decided by an explicit build-time
+/// flag, not by the build mode. The default is the experiment mode (mock
+/// allowed and clearly labelled); only a build that passes
+/// `--dart-define=PRODUCTION_ADS=true` refuses to run the mock.
 class AdsConfig {
   AdsConfig._();
 
-  /// True only in a debug build. A release build can never enable the mock,
-  /// so a production artifact cannot silently ship the fake reward screen.
-  static bool get mockMode => kDebugMode && !kReleaseMode;
+  /// Explicit build-time switch. Defaults to `false`, i.e. the experiment
+  /// mode where the local simulation is allowed. Set it to `true` only for a
+  /// production build that must not ship the fake reward screen.
+  static const bool productionAds =
+      bool.fromEnvironment('PRODUCTION_ADS', defaultValue: false);
+
+  /// True when the local simulation may run. Independent of `kDebugMode` and
+  /// `kReleaseMode`, so a CI release build still gets the experiment mode
+  /// unless `PRODUCTION_ADS=true` was passed explicitly.
+  static bool get mockMode => !productionAds;
 
   /// Diagnostic tag written when a mock reward completes. Never `ad_viewed`
   /// or `ad_impression`.
@@ -147,8 +157,8 @@ class _AdPageState extends State<AdPage> {
       setState(() {
         _loading = false;
         _error =
-            'هذه النسخة لا تسمح بمحاكاة الإعلان. الإعلانات الحقيقية غير مفعّلة '
-            'في هذه النسخة التجريبية.';
+            'هذه النسخة مبنية بوضع الإنتاج (PRODUCTION_ADS=true) ولا تسمح '
+            'بمحاكاة الإعلان. الإعلانات الحقيقية غير مفعّلة في هذه النسخة.';
       });
       return;
     }
