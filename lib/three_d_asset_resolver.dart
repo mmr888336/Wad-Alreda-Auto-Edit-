@@ -60,12 +60,48 @@ class ResolvedAsset {
 /// cache) and [ThreeDQueryPlanner] for keyword extraction. Resolution order:
 ///   1. [KhronosModelCatalog.match] on the keywords (offline, reliable).
 ///   2. [ThreeDAssetService.search] with the first keyword.
-///   3. [KhronosModelCatalog.fallbackFor] as a last resort.
+///
+/// A candidate is only accepted when [relevanceScore] clears [minRelevance].
+/// When nothing is relevant, no asset is returned at all (the caller keeps
+/// its billboard) instead of forcing an unrelated model into the scene.
 class ThreeDAssetResolver {
   ThreeDAssetResolver({required this.service, required this.settings});
 
   final ThreeDAssetService service;
   final AppSettings settings;
+
+  /// Minimum [relevanceScore] a candidate must reach to be accepted.
+  static const double minRelevance = 1.0;
+
+  /// Pure relevance score between [keywords] and a candidate described by
+  /// [title], [id] and [tags]. Returns 0 when nothing overlaps, so a caller
+  /// can reject an unrelated asset instead of taking the first result.
+  ///
+  /// Each keyword that appears in the candidate's text adds 1; a keyword that
+  /// matches a tag exactly adds a small bonus so a tagged model beats a model
+  /// that only mentions the word in its title.
+  static double relevanceScore(
+    List<String> keywords, {
+    required String title,
+    String id = '',
+    List<String> tags = const <String>[],
+  }) {
+    final wanted = keywords
+        .map((k) => k.toLowerCase().trim())
+        .where((k) => k.isNotEmpty)
+        .toList();
+    if (wanted.isEmpty) return 0;
+
+    final haystack = '$title $id'.toLowerCase();
+    final tagSet = tags.map((t) => t.toLowerCase().trim()).toSet();
+
+    var score = 0.0;
+    for (final keyword in wanted) {
+      if (haystack.contains(keyword)) score += 1;
+      if (tagSet.contains(keyword)) score += 0.5;
+    }
+    return score;
+  }
 
   /// Keywords for [request], best first. Never empty.
   Future<List<String>> keywordsFor(ThreeDAssetRequest request) async {
@@ -80,13 +116,19 @@ class ThreeDAssetResolver {
   }
 
   /// Resolves [request] to a [ResolvedAsset] without downloading it.
-  Future<ResolvedAsset> resolve(ThreeDAssetRequest request) async {
+  ///
+  /// Returns null when no candidate clears [minRelevance]: an unrelated model
+  /// is worse than no model, so the caller keeps its billboard.
+  Future<ResolvedAsset?> resolve(ThreeDAssetRequest request) async {
     final keywords = await keywordsFor(request);
 
-    final catalogMatches = KhronosModelCatalog.match(keywords);
-    if (catalogMatches.isNotEmpty) {
+    final catalogMatch = _pickFromCatalog(
+      KhronosModelCatalog.match(keywords),
+      keywords,
+    );
+    if (catalogMatch != null) {
       return ResolvedAsset(
-        asset: KhronosModelCatalog.asset(catalogMatches.first),
+        asset: KhronosModelCatalog.asset(catalogMatch),
         keywords: keywords,
         fromCatalog: true,
       );
@@ -95,31 +137,30 @@ class ThreeDAssetResolver {
     if (keywords.isNotEmpty) {
       try {
         final results = await service.search(keywords.first);
-        if (results.isNotEmpty) {
-          return ResolvedAsset(asset: results.first, keywords: keywords);
+        final matched = _pickFromPool(results, keywords);
+        if (matched != null) {
+          return ResolvedAsset(asset: matched, keywords: keywords);
         }
       } catch (_) {
-        // Fall through to the catalog fallback below.
+        // No relevant asset: the caller keeps its billboard.
       }
     }
 
-    final fallback = KhronosModelCatalog.fallbackFor(0);
-    return ResolvedAsset(
-      asset: KhronosModelCatalog.asset(fallback),
-      keywords: keywords,
-      fromCatalog: true,
-    );
+    return null;
   }
 
   /// Resolves [request] and downloads the GLB, returning the local path.
   ///
   /// [onInspecting] is forwarded to [ThreeDAssetService.download] so the
   /// caller can log the download and inspection as separate stages.
-  Future<ResolvedAsset> resolveAndDownload(
+  ///
+  /// Returns null when [resolve] found no relevant asset.
+  Future<ResolvedAsset?> resolveAndDownload(
     ThreeDAssetRequest request, {
     void Function()? onInspecting,
   }) async {
     final resolved = await resolve(request);
+    if (resolved == null) return null;
     final path = await service.download(
       resolved.asset,
       onInspecting: onInspecting,
@@ -132,6 +173,9 @@ class ThreeDAssetResolver {
   /// [props] maps an `assetKey` to the text describing that prop. The beat is
   /// searched once (using [beatText]); the returned assets are then assigned
   /// to props by keyword matching. The result is keyed by `assetKey`.
+  ///
+  /// A prop whose candidates do not clear [minRelevance] is left out of the
+  /// map, so the caller keeps its billboard for that prop.
   Future<Map<String, ResolvedAsset>> resolveForBeat({
     required String beatText,
     required Map<String, String> props,
@@ -188,45 +232,55 @@ class ThreeDAssetResolver {
         continue;
       }
 
-      final fallback = KhronosModelCatalog.fallbackFor(result.length);
-      result[assetKey] = ResolvedAsset(
-        asset: KhronosModelCatalog.asset(fallback),
-        keywords: propKeywords,
-        fromCatalog: true,
-      );
+      // No relevant asset for this prop: leave it out so the caller keeps
+      // its billboard instead of showing an unrelated model.
     }
 
     return result;
   }
 
+  /// Best candidate in [pool] whose [relevanceScore] clears [minRelevance],
+  /// or null when none does.
   ThreeDAsset? _pickFromPool(List<ThreeDAsset> pool, List<String> keywords) {
-    if (pool.isEmpty) return null;
-    if (keywords.isEmpty) return pool.first;
+    if (pool.isEmpty || keywords.isEmpty) return null;
 
-    for (final keyword in keywords) {
-      final lower = keyword.toLowerCase();
-      for (final asset in pool) {
-        final haystack = '${asset.title} ${asset.id}'.toLowerCase();
-        if (haystack.contains(lower)) return asset;
+    ThreeDAsset? best;
+    var bestScore = 0.0;
+    for (final asset in pool) {
+      final score = relevanceScore(
+        keywords,
+        title: asset.title,
+        id: asset.id,
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        best = asset;
       }
     }
-    return pool.first;
+    return bestScore >= minRelevance ? best : null;
   }
 
+  /// Best model in [pool] whose [relevanceScore] clears [minRelevance], or
+  /// null when none does.
   KhronosModel? _pickFromCatalog(
     List<KhronosModel> pool,
     List<String> keywords,
   ) {
-    if (pool.isEmpty) return null;
-    if (keywords.isEmpty) return pool.first;
+    if (pool.isEmpty || keywords.isEmpty) return null;
 
-    for (final keyword in keywords) {
-      final lower = keyword.toLowerCase();
-      for (final model in pool) {
-        final haystack = '${model.name} ${model.tags.join(' ')}'.toLowerCase();
-        if (haystack.contains(lower)) return model;
+    KhronosModel? best;
+    var bestScore = 0.0;
+    for (final model in pool) {
+      final score = relevanceScore(
+        keywords,
+        title: model.name,
+        tags: model.tags,
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        best = model;
       }
     }
-    return pool.first;
+    return bestScore >= minRelevance ? best : null;
   }
 }
