@@ -63,6 +63,14 @@ class AdsConfig {
   static const bool productionAds =
       bool.fromEnvironment('PRODUCTION_ADS', defaultValue: false);
 
+  /// Explicit build-time switch for the reward gate itself. Defaults to
+  /// `false`, i.e. the gate is disabled: every reward request resolves as
+  /// completed immediately, with no screen, no delay and no message, so the
+  /// original action continues straight away. Set it to `true` to run the
+  /// current local simulation path.
+  static const bool adsGate =
+      bool.fromEnvironment('ADS_GATE', defaultValue: false);
+
   /// True when the local simulation may run. Independent of `kDebugMode` and
   /// `kReleaseMode`, so a CI release build still gets the experiment mode
   /// unless `PRODUCTION_ADS=true` was passed explicitly.
@@ -125,6 +133,11 @@ class MockRewardedAdGateway {
   /// - [MockRewardResult.failed] when the mock is disabled or a reward for
   ///   this placement is already in flight.
   static Future<MockRewardResult> show(AdPlacement placement) {
+    // Single entry point for every reward request. When the gate is disabled
+    // the reward is granted immediately: no screen, no timer, no message.
+    if (!AdsConfig.adsGate) {
+      return Future<MockRewardResult>.value(MockRewardResult.completed);
+    }
     if (!AdsConfig.mockMode) {
       return Future<MockRewardResult>.value(MockRewardResult.failed);
     }
