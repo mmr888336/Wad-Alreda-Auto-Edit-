@@ -22,7 +22,19 @@ import 'motion_transitions.dart' show MotionTransitionKind;
 import 'transition_director.dart';
 
 /// The place a segment happens in.
-enum StoryEnvironment { office, room, library, street, studio, outdoors }
+enum StoryEnvironment {
+  office,
+  room,
+  library,
+  street,
+  studio,
+  outdoors,
+  bathroom,
+  kitchen,
+  bedroom,
+  livingRoom,
+  hallway,
+}
 
 /// Emotional colour of a segment (drives the light of the world).
 enum StoryMood { calm, energetic, tense }
@@ -436,6 +448,62 @@ class StoryUnderstanding {
       triggers: <String>[
         'نمو', 'تطور', 'زيادة', 'تحسن', 'تقدم', 'grow', 'growth', 'improve',
         'progress', 'increase', 'upgrade',
+      ],
+    ),
+    StoryConcept(
+      id: 'bathroom',
+      environment: StoryEnvironment.bathroom,
+      mood: StoryMood.calm,
+      weight: 3,
+      props: <String>['sink', 'mirror', 'bathtub'],
+      triggers: <String>[
+        'حمام', 'حمامات', 'دورة مياه', 'دورة مياة', 'تواليت', 'مرحاض',
+        'bathroom', 'bath', 'toilet', 'restroom', 'washroom',
+      ],
+    ),
+    StoryConcept(
+      id: 'kitchen',
+      environment: StoryEnvironment.kitchen,
+      mood: StoryMood.calm,
+      weight: 3,
+      props: <String>['stove', 'fridge', 'counter'],
+      triggers: <String>[
+        'مطبخ', 'مطابخ', 'طبخ', 'فرن', 'ثلاجة', 'ثلاجه', 'بوتاجاز',
+        'kitchen', 'cook', 'cooking', 'stove', 'fridge', 'oven',
+      ],
+    ),
+    StoryConcept(
+      id: 'bedroom',
+      environment: StoryEnvironment.bedroom,
+      mood: StoryMood.calm,
+      weight: 3,
+      props: <String>['bed', 'wardrobe', 'nightstand'],
+      triggers: <String>[
+        'غرفة نوم', 'غرفه نوم', 'غرف نوم', 'سرير', 'نوم', 'دولاب',
+        'bedroom', 'bed', 'sleep', 'wardrobe',
+      ],
+    ),
+    StoryConcept(
+      id: 'living_room',
+      environment: StoryEnvironment.livingRoom,
+      mood: StoryMood.calm,
+      weight: 3,
+      props: <String>['sofa', 'tv', 'coffee_table'],
+      triggers: <String>[
+        'صالة', 'صاله', 'صالون', 'غرفة معيشة', 'غرفه معيشه', 'معيشة',
+        'معيشه', 'كنبة', 'كنبه', 'انتريه',
+        'living', 'living room', 'lounge', 'sofa', 'couch',
+      ],
+    ),
+    StoryConcept(
+      id: 'hallway',
+      environment: StoryEnvironment.hallway,
+      mood: StoryMood.calm,
+      weight: 2,
+      props: <String>['door_frame', 'corridor_floor'],
+      triggers: <String>[
+        'ممر', 'ممرات', 'طرقة', 'طرقه', 'كوريدور',
+        'hallway', 'corridor', 'hall',
       ],
     ),
   ];
@@ -955,6 +1023,11 @@ class StoryUnderstanding {
       StoryEnvironment.street => 'شارع',
       StoryEnvironment.studio => 'استوديو',
       StoryEnvironment.outdoors => 'خارج',
+      StoryEnvironment.bathroom => 'حمام',
+      StoryEnvironment.kitchen => 'مطبخ',
+      StoryEnvironment.bedroom => 'غرفة نوم',
+      StoryEnvironment.livingRoom => 'صالة',
+      StoryEnvironment.hallway => 'ممر',
     };
     final idea = top?.id ?? 'فكرة عامة';
     final verb = switch (intent) {

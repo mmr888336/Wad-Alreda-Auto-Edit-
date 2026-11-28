@@ -27,7 +27,8 @@ class DomainStoryPack {
 
   /// Environment ids that belong to the domain, best first. The ids match
   /// `StoryEnvironment` names in `story_understanding.dart` (`office`,
-  /// `room`, `library`, `street`, `studio`, `outdoors`).
+  /// `room`, `library`, `street`, `studio`, `outdoors`, `bathroom`,
+  /// `kitchen`, `bedroom`, `livingRoom`, `hallway`).
   final List<String> environments;
 
   /// Objects that belong to the domain (asset-style keys).
@@ -442,7 +443,10 @@ class DomainStoryPacks {
         'architecture', 'building', 'house', 'apartment', 'interior',
         'room', 'kitchen', 'bathroom',
       ],
-      environments: <String>['room', 'outdoors', 'street'],
+      environments: <String>[
+        'room', 'livingRoom', 'bedroom', 'kitchen', 'bathroom', 'hallway',
+        'outdoors', 'street',
+      ],
       objects: <String>['house', 'door', 'window', 'sofa'],
       shotGrammar: <String>['establishing', 'reveal', 'detail'],
       intents: <String>['explain'],

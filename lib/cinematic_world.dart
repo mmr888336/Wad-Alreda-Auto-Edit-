@@ -250,6 +250,61 @@ class CinematicWorld {
         WorldSlot(x: 0.16, y: 0.92, scale: 0.24, depth: 0.85),
       ],
     ),
+    StoryEnvironment.bathroom: WorldLayout(
+      environment: StoryEnvironment.bathroom,
+      backdropKey: 'bg:bathroom',
+      backdropColor: '#1C2A2E',
+      setPieces: <String>['bathtub', 'sink', 'mirror'],
+      slots: <WorldSlot>[
+        WorldSlot(x: 0.2, y: 0.72, scale: 0.2, depth: 0.38),
+        WorldSlot(x: 0.8, y: 0.72, scale: 0.2, depth: 0.38),
+        WorldSlot(x: 0.84, y: 0.9, scale: 0.22, depth: 0.85),
+      ],
+    ),
+    StoryEnvironment.kitchen: WorldLayout(
+      environment: StoryEnvironment.kitchen,
+      backdropKey: 'bg:kitchen',
+      backdropColor: '#2A2118',
+      setPieces: <String>['counter', 'stove', 'fridge'],
+      slots: <WorldSlot>[
+        WorldSlot(x: 0.2, y: 0.72, scale: 0.2, depth: 0.38),
+        WorldSlot(x: 0.8, y: 0.72, scale: 0.2, depth: 0.38),
+        WorldSlot(x: 0.84, y: 0.9, scale: 0.22, depth: 0.85),
+      ],
+    ),
+    StoryEnvironment.bedroom: WorldLayout(
+      environment: StoryEnvironment.bedroom,
+      backdropKey: 'bg:bedroom',
+      backdropColor: '#241C24',
+      setPieces: <String>['bed', 'wardrobe', 'nightstand'],
+      slots: <WorldSlot>[
+        WorldSlot(x: 0.2, y: 0.72, scale: 0.2, depth: 0.38),
+        WorldSlot(x: 0.8, y: 0.72, scale: 0.2, depth: 0.38),
+        WorldSlot(x: 0.84, y: 0.9, scale: 0.22, depth: 0.85),
+      ],
+    ),
+    StoryEnvironment.livingRoom: WorldLayout(
+      environment: StoryEnvironment.livingRoom,
+      backdropKey: 'bg:living_room',
+      backdropColor: '#2A2024',
+      setPieces: <String>['sofa', 'tv', 'coffee_table'],
+      slots: <WorldSlot>[
+        WorldSlot(x: 0.2, y: 0.72, scale: 0.2, depth: 0.38),
+        WorldSlot(x: 0.8, y: 0.72, scale: 0.2, depth: 0.38),
+        WorldSlot(x: 0.84, y: 0.9, scale: 0.22, depth: 0.85),
+      ],
+    ),
+    StoryEnvironment.hallway: WorldLayout(
+      environment: StoryEnvironment.hallway,
+      backdropKey: 'bg:hallway',
+      backdropColor: '#1E1E24',
+      setPieces: <String>['door_frame', 'corridor_floor'],
+      slots: <WorldSlot>[
+        WorldSlot(x: 0.2, y: 0.72, scale: 0.2, depth: 0.38),
+        WorldSlot(x: 0.8, y: 0.72, scale: 0.2, depth: 0.38),
+        WorldSlot(x: 0.84, y: 0.9, scale: 0.22, depth: 0.85),
+      ],
+    ),
   };
 
   static String _particleFor(StoryEnvironment environment) {
