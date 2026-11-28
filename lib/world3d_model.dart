@@ -14,7 +14,6 @@
 /// 3D so that the NEUTRAL camera sees it exactly at (x, y); the same world
 /// then reads like the 2D layout when the camera rests, and opens into real
 /// 3D when the camera moves.
-library;
 
 import 'dart:math' as math;
 
