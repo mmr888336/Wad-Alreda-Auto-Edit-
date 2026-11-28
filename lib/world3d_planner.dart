@@ -14,7 +14,6 @@
 /// The 2D layout is kept: with the camera at rest every object lands exactly
 /// where its 2D layer was (see [World3DStage.pointAt]).
 /// Pure Dart, no I/O.
-library;
 
 import 'cinematic_world.dart';
 import 'depth_camera_model.dart';
