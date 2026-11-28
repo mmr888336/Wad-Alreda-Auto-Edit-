@@ -32,6 +32,7 @@ import 'depth_camera_model.dart' show DepthCameraMove;
 import 'glb_inspector.dart';
 import 'motion_scene_model.dart';
 import 'render_router.dart';
+import 'three_d_asset_resolver.dart';
 import 'three_d_stage_log.dart';
 import 'world3d_glb_builder.dart';
 import 'world3d_planner.dart';
@@ -138,6 +139,7 @@ class World3DSceneRunner {
     bool filamentReady = true,
     Duration settle = const Duration(milliseconds: 350),
     void Function(ThreeDStage stage)? onStage,
+    ThreeDAssetResolver? resolver,
   }) async {
     final notes = <String>[];
     final label = 'مشهد $sceneNumber';
@@ -197,6 +199,26 @@ class World3DSceneRunner {
           ? motion.duration.clamp(_minSeconds, _maxSeconds).toDouble()
           : 3.0;
 
+      // 0. Resolve + download the 3D models of the props (decor layers).
+      //    Any failure here is non-fatal: the prop keeps its billboard.
+      final resolved = await _resolveProps(
+        motion: motion,
+        sceneNumber: sceneNumber,
+        resolver: resolver,
+        summary: summary,
+        notes: notes,
+        label: label,
+        onStage: onStage,
+      );
+      final modelBytes = await _loadModelBytes(
+        resolved: resolved,
+        sceneNumber: sceneNumber,
+        summary: summary,
+        notes: notes,
+        label: label,
+        onStage: onStage,
+      );
+
       // 1. Plan.
       final planned = await step<World3DScene>(
         ThreeDStage.worldPlan,
@@ -205,6 +227,7 @@ class World3DSceneRunner {
           stage: World3DNativeCamera.stage(),
           move: move,
           intensity: intensity,
+          resolved: resolved,
         ),
         describe: (scene) => '${scene.objects.length} جسم',
       );
@@ -216,6 +239,7 @@ class World3DSceneRunner {
           final glb = World3DGlbBuilder.build(
             planned,
             billboardImages: billboardImages,
+            modelBytes: modelBytes,
             cameraSeconds: seconds,
             holdStart: _hold,
             holdEnd: _hold,
@@ -328,5 +352,168 @@ class World3DSceneRunner {
         } catch (_) {}
       }
     }
+  }
+
+  /// Resolves the 3D models of the props of [motion] (the `decor:` layers
+  /// that are not set pieces) and downloads them, at most two at a time.
+  ///
+  /// Never throws: a network error, a missing key or a rejected GLB only
+  /// leaves that prop without a model, so it keeps its billboard.
+  static Future<Map<String, ResolvedAsset>> _resolveProps({
+    required MotionScene motion,
+    required int sceneNumber,
+    required ThreeDAssetResolver? resolver,
+    required ThreeDExportSummary summary,
+    required List<String> notes,
+    required String label,
+    void Function(ThreeDStage stage)? onStage,
+  }) async {
+    if (resolver == null) return const <String, ResolvedAsset>{};
+
+    // The props of the scene: `decor:` layers that are not set pieces.
+    final props = <String, String>{};
+    for (final layer in motion.layers) {
+      final key = layer.assetKey;
+      if (key == null || !key.startsWith('decor:')) continue;
+      if (World3DPlanner.isSetPiece(key, layer.scale)) continue;
+      final text = layer.text?.trim() ?? '';
+      props[key] = text.isNotEmpty
+          ? text
+          : key.substring('decor:'.length).replaceAll('_', ' ');
+    }
+    if (props.isEmpty) return const <String, ResolvedAsset>{};
+
+    // The beat text: the words of the scene's layers (WorldScene has no
+    // caption of its own). zone/shot/caption are not available here.
+    final beatText = motion.layers
+        .map((layer) => layer.text?.trim() ?? '')
+        .where((text) => text.isNotEmpty)
+        .join(' ');
+
+    // 1. Resolve (one search for the whole beat).
+    onStage?.call(ThreeDStage.search);
+    summary.begin(sceneNumber, ThreeDStage.search);
+    final watch = Stopwatch()..start();
+    Map<String, ResolvedAsset> resolved;
+    try {
+      resolved = await resolver.resolveForBeat(
+        beatText: beatText,
+        props: props,
+      );
+      summary.record(
+        sceneNumber,
+        ThreeDStage.search,
+        ok: true,
+        elapsed: watch.elapsed,
+        detail: '${resolved.length} أصل',
+      );
+    } catch (error) {
+      summary.record(
+        sceneNumber,
+        ThreeDStage.search,
+        ok: false,
+        elapsed: watch.elapsed,
+        detail: '$error',
+      );
+      notes.add('$label: تعذّر إيجاد مجسمات (${error})؛ تبقى الصور المسطحة.');
+      return const <String, ResolvedAsset>{};
+    }
+
+    // 2. Download, at most two at a time.
+    final entries = resolved.entries.toList();
+    final updated = <String, ResolvedAsset>{};
+    var index = 0;
+
+    Future<void> worker() async {
+      while (true) {
+        final i = index++;
+        if (i >= entries.length) return;
+        final entry = entries[i];
+        final assetKey = entry.key;
+        final asset = entry.value;
+
+        onStage?.call(ThreeDStage.download);
+        summary.begin(sceneNumber, ThreeDStage.download);
+        final downloadWatch = Stopwatch()..start();
+        try {
+          final path = await resolver.service.download(
+            asset.asset,
+            onInspecting: () {
+              summary.begin(sceneNumber, ThreeDStage.inspect);
+            },
+          );
+          summary.record(
+            sceneNumber,
+            ThreeDStage.download,
+            ok: true,
+            elapsed: downloadWatch.elapsed,
+            detail: path.split('/').last,
+          );
+          updated[assetKey] = asset.copyWith(localPath: path);
+        } catch (error) {
+          summary.record(
+            sceneNumber,
+            ThreeDStage.download,
+            ok: false,
+            elapsed: downloadWatch.elapsed,
+            detail: '$error',
+          );
+          notes.add(
+            '$label: تعذّر تنزيل مجسم $assetKey (${error})؛ تبقى الصورة المسطحة.',
+          );
+        }
+      }
+    }
+
+    final workers = <Future<void>>[
+      for (var i = 0; i < 2 && i < entries.length; i++) worker(),
+    ];
+    await Future.wait(workers);
+
+    return updated;
+  }
+
+  /// Reads the downloaded GLBs into [World3DGlbBuilder.build]'s `modelBytes`,
+  /// keyed by `assetKey`. A model that fails inspection is left out (the
+  /// builder then skips it and lists it in `skipped`).
+  static Future<Map<String, Uint8List>> _loadModelBytes({
+    required Map<String, ResolvedAsset> resolved,
+    required int sceneNumber,
+    required ThreeDExportSummary summary,
+    required List<String> notes,
+    required String label,
+    void Function(ThreeDStage stage)? onStage,
+  }) async {
+    if (resolved.isEmpty) return const <String, Uint8List>{};
+
+    onStage?.call(ThreeDStage.inspect);
+    summary.begin(sceneNumber, ThreeDStage.inspect);
+    final watch = Stopwatch()..start();
+    final bytes = <String, Uint8List>{};
+    try {
+      for (final entry in resolved.entries) {
+        final path = entry.value.localPath;
+        if (path == null || path.isEmpty) continue;
+        final data = await World3DGlbBuilder.readModel(path);
+        if (data != null) bytes[entry.key] = data;
+      }
+      summary.record(
+        sceneNumber,
+        ThreeDStage.inspect,
+        ok: true,
+        elapsed: watch.elapsed,
+        detail: '${bytes.length} مجسم',
+      );
+    } catch (error) {
+      summary.record(
+        sceneNumber,
+        ThreeDStage.inspect,
+        ok: false,
+        elapsed: watch.elapsed,
+        detail: '$error',
+      );
+      notes.add('$label: تعذّر فحص المجسمات (${error})؛ تبقى الصور المسطحة.');
+    }
+    return bytes;
   }
 }
